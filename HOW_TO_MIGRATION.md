@@ -3,10 +3,10 @@
 Ideally, database changes are managed through standard migrations to ensure consistency across Development, Staging, and Production (VPS) environments. This guide explains the workflow using **Golang Migrate** and **Docker**.
 
 ## 1. Database Credentials (Local Docker)
-- **Container Name**: `gate_postgres`
-- **User**: `gate`
-- **Password**: `@Gate123`
-- **Database**: `gate_db`
+- **Container Name**: `sea_postgres`
+- **User**: `seaply`
+- **Password**: `@Seaply123`
+- **Database**: `seaply_db`
 - **Port**: `5432`
 
 ## 2. Backup / Dump Database
@@ -14,7 +14,7 @@ If you need to backup the current database state (data + schema), run this comma
 
 ```bash
 # From Windows PowerShell in Backend directory
-docker exec -e PGPASSWORD=@Gate123 gate_postgres pg_dump -U gate -d gate_db > database/db.sql
+docker exec -e PGPASSWORD=@Seaply123 sea_postgres pg_dump -U seaply -d seaply_db > database/db.sql
 ```
 
 This creates a full snapshot in `backend/database/db.sql`.
