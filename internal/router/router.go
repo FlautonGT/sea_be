@@ -3,17 +3,17 @@ package router
 import (
 	"unsafe"
 
-	"gate-v2/internal/config"
-	"gate-v2/internal/database"
-	"gate-v2/internal/middleware"
-	"gate-v2/internal/payment"
-	"gate-v2/internal/provider"
-	"gate-v2/internal/router/admin"
-	"gate-v2/internal/router/public"
-	"gate-v2/internal/router/user"
-	"gate-v2/internal/services"
-	"gate-v2/internal/storage"
-	"gate-v2/internal/utils"
+	"seaply/internal/config"
+	"seaply/internal/database"
+	"seaply/internal/middleware"
+	"seaply/internal/payment"
+	"seaply/internal/provider"
+	"seaply/internal/router/admin"
+	"seaply/internal/router/public"
+	"seaply/internal/router/user"
+	"seaply/internal/services"
+	"seaply/internal/storage"
+	"seaply/internal/utils"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -458,7 +458,7 @@ func setupAdminRoutes(r chi.Router, deps *Dependencies) {
 
 func setupWebhookRoutes(r chi.Router, deps *Dependencies) {
 	mainDeps := toPublicDeps(deps)
-	
+
 	// Provider webhooks
 	r.Post("/digiflazz", public.HandleDigiflazzWebhook(mainDeps))
 	r.Post("/vipreseller", public.HandleVIPResellerWebhook(mainDeps))
@@ -472,12 +472,3 @@ func setupWebhookRoutes(r chi.Router, deps *Dependencies) {
 	r.Post("/midtrans", public.HandleMidtransWebhook(mainDeps))
 	r.Post("/dana", public.HandleDANAWebhook(mainDeps))
 }
-
-
-
-
-
-
-
-
-

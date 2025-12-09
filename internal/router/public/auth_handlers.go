@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"gate-v2/internal/utils"
+	"seaply/internal/utils"
 )
 
 // LoginRequest represents the login request body
@@ -111,25 +111,25 @@ type AdminRow struct {
 
 // UserRow represents user data from database
 type UserRow struct {
-	ID              string
-	FirstName       string
-	LastName        *string
-	Email           string
-	PasswordHash    *string
-	PhoneNumber     *string
-	Status          string
-	ProfilePicture  *string
-	PrimaryRegion   string
-	MFAStatus       string
-	MembershipLevel string
-	BalanceIDR      int64
-	BalanceMYR      int64
-	BalancePHP      int64
-	BalanceSGD      int64
-	BalanceTHB      int64
+	ID                string
+	FirstName         string
+	LastName          *string
+	Email             string
+	PasswordHash      *string
+	PhoneNumber       *string
+	Status            string
+	ProfilePicture    *string
+	PrimaryRegion     string
+	MFAStatus         string
+	MembershipLevel   string
+	BalanceIDR        int64
+	BalanceMYR        int64
+	BalancePHP        int64
+	BalanceSGD        int64
+	BalanceTHB        int64
 	TotalTransactions int64
-	TotalSpentIDR   int64
-	EmailVerifiedAt *time.Time
+	TotalSpentIDR     int64
+	EmailVerifiedAt   *time.Time
 }
 
 // handleAdminLoginImpl implements the admin login logic
@@ -437,12 +437,12 @@ func HandleUserLoginImpl(deps *Dependencies) http.HandlerFunc {
 			},
 			User: map[string]interface{}{
 				"id":             user.ID,
-				"firstName":     user.FirstName,
-				"lastName":      lastName,
-				"email":         user.Email,
+				"firstName":      user.FirstName,
+				"lastName":       lastName,
+				"email":          user.Email,
 				"profilePicture": profilePic,
-				"status":        user.Status,
-				"primaryRegion": user.PrimaryRegion,
+				"status":         user.Status,
+				"primaryRegion":  user.PrimaryRegion,
 				"membership": map[string]interface{}{
 					"level": user.MembershipLevel,
 					"name":  getMembershipName(user.MembershipLevel),
@@ -551,4 +551,3 @@ func extractBearerToken(r *http.Request) string {
 
 	return parts[1]
 }
-

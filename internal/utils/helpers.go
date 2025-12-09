@@ -14,19 +14,19 @@ import (
 )
 
 const (
-	invoicePrefix       = "GATE"
-	depositPrefix       = "DEP"
+	invoicePrefix       = "SEA"
+	depositPrefix       = "SEA"
 	invoiceRandomLength = 20
 )
 
 // GenerateInvoiceNumber generates a unique invoice number
-// Format: GATE + random alphanumeric (total 23 chars)
+// Format: SEA + random alphanumeric (total 23 chars)
 func GenerateInvoiceNumber() string {
 	return generateRandomID(invoicePrefix, invoiceRandomLength)
 }
 
 // GenerateDepositInvoiceNumber generates a unique deposit invoice number
-// Format: DEP + random alphanumeric (total 23 chars)
+// Format: SEA + random alphanumeric (total 23 chars)
 func GenerateDepositInvoiceNumber() string {
 	return generateRandomID(depositPrefix, invoiceRandomLength)
 }
@@ -107,12 +107,12 @@ func FormatCurrency(amount float64, currency string) string {
 		"SGD": "S$",
 		"THB": "฿",
 	}
-	
+
 	symbol := symbols[currency]
 	if symbol == "" {
 		symbol = currency
 	}
-	
+
 	// Format number with thousand separator
 	formatted := formatNumber(amount, currency)
 	return symbol + formatted
@@ -130,7 +130,7 @@ func formatWithThousands(n int64, sep string) string {
 	if len(str) <= 3 {
 		return str
 	}
-	
+
 	var result strings.Builder
 	for i, c := range str {
 		if i > 0 && (len(str)-i)%3 == 0 {
@@ -258,4 +258,3 @@ func CodeToSlug(code string) string {
 func init() {
 	rand.Seed(time.Now().UnixNano())
 }
-

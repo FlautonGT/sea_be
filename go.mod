@@ -1,4 +1,4 @@
-module gate-v2
+module seaply
 
 go 1.22
 

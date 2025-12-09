@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"gate-v2/internal/middleware"
-	"gate-v2/internal/payment"
-	"gate-v2/internal/utils"
+	"seaply/internal/middleware"
+	"seaply/internal/payment"
+	"seaply/internal/utils"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
@@ -1144,15 +1144,15 @@ func HandleCreateOrderImpl(deps *Dependencies) http.HandlerFunc {
 				paymentReq.CustomerPhone = *contactPhone
 			}
 
-		log.Info().
-			Str("endpoint", "/v2/orders").
-			Str("ref_id", invoiceNumber).
-			Str("channel", paymentCode).
-			Str("gateway_name", gatewayName).
-			Float64("amount", paymentReq.Amount).
-			Str("callback_url", paymentReq.CallbackURL).
-			Str("success_url", paymentReq.SuccessURL).
-			Msg("Calling payment gateway")
+			log.Info().
+				Str("endpoint", "/v2/orders").
+				Str("ref_id", invoiceNumber).
+				Str("channel", paymentCode).
+				Str("gateway_name", gatewayName).
+				Float64("amount", paymentReq.Amount).
+				Str("callback_url", paymentReq.CallbackURL).
+				Str("success_url", paymentReq.SuccessURL).
+				Msg("Calling payment gateway")
 
 			// Check if gateway exists, if not try fallback
 			if _, err := deps.PaymentManager.Get(gatewayName); err != nil {
@@ -1167,7 +1167,7 @@ func HandleCreateOrderImpl(deps *Dependencies) http.HandlerFunc {
 						Msg("Primary gateway not available, using fallback")
 					gatewayName = fallbackGateway
 					paymentReq.GatewayName = fallbackGateway
-					
+
 					// Update callback URL for fallback gateway
 					if fallbackGateway == "XENDIT" {
 						paymentReq.CallbackURL = deps.Config.App.BaseURL + "/v2/webhooks/xendit"
@@ -1502,32 +1502,32 @@ func getFallbackGateway(channelCode, primaryGateway string) string {
 func getGatewayForChannel(channelCode string) string {
 	gatewayMap := map[string]string{
 		// QRIS & E-Wallet via DANA Gapura
-		"QRIS":      "DANA_DIRECT",
-		"DANA":      "DANA_DIRECT",
-		
+		"QRIS": "DANA_DIRECT",
+		"DANA": "DANA_DIRECT",
+
 		// GoPay & ShopeePay via Midtrans
 		"GOPAY":     "MIDTRANS",
 		"SHOPEEPAY": "MIDTRANS",
-		
+
 		// Retail via Xendit
 		"ALFAMART":  "XENDIT",
 		"INDOMARET": "XENDIT",
-		
+
 		// Virtual Accounts - BRI direct via SNAP API
-		"BRI_VA":    "BRI_DIRECT",
-		"VA_BRI":    "BRI_DIRECT", // alias
-		
+		"BRI_VA": "BRI_DIRECT",
+		"VA_BRI": "BRI_DIRECT", // alias
+
 		// Virtual Accounts via Xendit
-		"BCA_VA":    "XENDIT",
-		"VA_BCA":    "XENDIT",
-		"BNI_VA":    "XENDIT",
-		"VA_BNI":    "XENDIT",
+		"BCA_VA":     "XENDIT",
+		"VA_BCA":     "XENDIT",
+		"BNI_VA":     "XENDIT",
+		"VA_BNI":     "XENDIT",
 		"MANDIRI_VA": "XENDIT",
 		"VA_MANDIRI": "XENDIT",
 		"PERMATA_VA": "XENDIT",
 		"VA_PERMATA": "XENDIT",
-		"CIMB_VA":   "XENDIT",
-		"VA_CIMB":   "XENDIT",
+		"CIMB_VA":    "XENDIT",
+		"VA_CIMB":    "XENDIT",
 	}
 
 	gateway, exists := gatewayMap[channelCode]

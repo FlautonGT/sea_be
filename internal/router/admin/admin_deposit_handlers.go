@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"gate-v2/internal/middleware"
-	"gate-v2/internal/utils"
+	"seaply/internal/middleware"
+	"seaply/internal/utils"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"

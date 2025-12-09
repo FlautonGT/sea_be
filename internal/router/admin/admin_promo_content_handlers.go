@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"gate-v2/internal/middleware"
-	"gate-v2/internal/storage"
-	"gate-v2/internal/utils"
+	"seaply/internal/middleware"
+	"seaply/internal/storage"
+	"seaply/internal/utils"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -156,29 +156,29 @@ func HandleAdminGetPromoImpl(deps *Dependencies) http.HandlerFunc {
 		deps.DB.Pool.QueryRow(ctx, "SELECT ARRAY_AGG(region_code) FROM promo_regions WHERE promo_id = $1", promoID).Scan(&regions)
 
 		utils.WriteSuccessJSON(w, map[string]interface{}{
-			"id":                 id,
-			"code":               code,
-			"title":              title,
-			"description":        description,
-			"note":               note,
-			"products":           products,
-			"paymentChannels":    payments,
-			"regions":            regions,
-			"daysAvailable":      daysAvailable,
-			"promoPercentage":    promoPercentage,
-			"promoFlat":          promoFlat,
-			"maxPromoAmount":     maxPromoAmount,
-			"minAmount":          minAmount,
-			"maxUsage":           maxUsage,
-			"maxDailyUsage":      maxDailyUsage,
-			"maxUsagePerID":      maxUsagePerID,
-			"maxUsagePerDevice":  maxUsagePerDevice,
-			"maxUsagePerIP":      maxUsagePerIP,
-			"totalUsage":         totalUsage,
-			"isActive":           isActive,
-			"startAt":            startAt.Format(time.RFC3339),
-			"expiredAt":          expiredAt.Format(time.RFC3339),
-			"createdAt":          createdAt.Format(time.RFC3339),
+			"id":                id,
+			"code":              code,
+			"title":             title,
+			"description":       description,
+			"note":              note,
+			"products":          products,
+			"paymentChannels":   payments,
+			"regions":           regions,
+			"daysAvailable":     daysAvailable,
+			"promoPercentage":   promoPercentage,
+			"promoFlat":         promoFlat,
+			"maxPromoAmount":    maxPromoAmount,
+			"minAmount":         minAmount,
+			"maxUsage":          maxUsage,
+			"maxDailyUsage":     maxDailyUsage,
+			"maxUsagePerID":     maxUsagePerID,
+			"maxUsagePerDevice": maxUsagePerDevice,
+			"maxUsagePerIP":     maxUsagePerIP,
+			"totalUsage":        totalUsage,
+			"isActive":          isActive,
+			"startAt":           startAt.Format(time.RFC3339),
+			"expiredAt":         expiredAt.Format(time.RFC3339),
+			"createdAt":         createdAt.Format(time.RFC3339),
 		})
 	}
 }
@@ -473,11 +473,11 @@ func HandleGetPromoStatsImpl(deps *Dependencies) http.HandlerFunc {
 
 		// Get stats (mock data for now - need promo_usages table)
 		utils.WriteSuccessJSON(w, map[string]interface{}{
-			"promoCode":     promoCode,
-			"totalUsage":    0,
-			"totalDiscount": 0,
-			"todayUsage":    0,
-			"todayDiscount": 0,
+			"promoCode":      promoCode,
+			"totalUsage":     0,
+			"totalDiscount":  0,
+			"todayUsage":     0,
+			"todayDiscount":  0,
 			"usageByProduct": []map[string]interface{}{},
 			"usageByPayment": []map[string]interface{}{},
 			"usageByRegion":  []map[string]interface{}{},

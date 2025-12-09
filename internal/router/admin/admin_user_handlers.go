@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"gate-v2/internal/middleware"
-	"gate-v2/internal/utils"
+	"seaply/internal/middleware"
+	"seaply/internal/utils"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -122,14 +122,14 @@ func HandleAdminGetUsersImpl(deps *Dependencies) http.HandlerFunc {
 			}
 
 			user := map[string]interface{}{
-				"id":            id,
-				"firstName":     firstName,
-				"lastName":      lastName,
-				"email":         email,
-				"phoneNumber":   phoneNumber,
+				"id":             id,
+				"firstName":      firstName,
+				"lastName":       lastName,
+				"email":          email,
+				"phoneNumber":    phoneNumber,
 				"profilePicture": profilePicture,
-				"status":        status,
-				"primaryRegion": primaryRegion,
+				"status":         status,
+				"primaryRegion":  primaryRegion,
 				"membership": map[string]interface{}{
 					"level": membershipLevel,
 					"name":  getMembershipName(membershipLevel),
@@ -259,14 +259,14 @@ func HandleAdminGetUserImpl(deps *Dependencies) http.HandlerFunc {
 		`, userID).Scan(&lastTransactionAt)
 
 		response := map[string]interface{}{
-			"id":            id,
-			"firstName":     firstName,
-			"lastName":      lastName,
-			"email":         email,
-			"phoneNumber":   phoneNumber,
+			"id":             id,
+			"firstName":      firstName,
+			"lastName":       lastName,
+			"email":          email,
+			"phoneNumber":    phoneNumber,
 			"profilePicture": profilePicture,
-			"status":        status,
-			"primaryRegion": primaryRegion,
+			"status":         status,
+			"primaryRegion":  primaryRegion,
 			"membership": map[string]interface{}{
 				"level": membershipLevel,
 				"name":  getMembershipName(membershipLevel),
@@ -381,7 +381,7 @@ func HandleUpdateUserStatusImpl(deps *Dependencies) http.HandlerFunc {
 
 // AdjustBalanceRequest represents the request to adjust user balance
 type AdjustBalanceRequest struct {
-	Type     string `json:"type" validate:"required"`     // CREDIT or DEBIT
+	Type     string `json:"type" validate:"required"` // CREDIT or DEBIT
 	Amount   int64  `json:"amount" validate:"required"`
 	Currency string `json:"currency" validate:"required"`
 	Reason   string `json:"reason" validate:"required"`

@@ -200,9 +200,9 @@ func Load() (*Config, error) {
 		Database: DatabaseConfig{
 			Host:         getEnv("DB_HOST", "localhost"),
 			Port:         getEnv("DB_PORT", "5432"),
-			User:         getEnv("DB_USER", "gate"),
-			Password:     getEnv("DB_PASSWORD", ""),
-			DBName:       getEnv("DB_NAME", "gate"),
+			User:         getEnv("DB_USER", "seaply"),
+			Password:     getEnv("DB_PASSWORD", "seaply_secret_password"),
+			DBName:       getEnv("DB_NAME", "seaply_db"),
 			SSLMode:      getEnv("DB_SSL_MODE", "disable"),
 			MaxOpenConns: getIntEnv("DB_MAX_OPEN_CONNS", 25),
 			MaxIdleConns: getIntEnv("DB_MAX_IDLE_CONNS", 10),
@@ -326,7 +326,7 @@ func Load() (*Config, error) {
 			MFARequired:        getBoolEnv("APP_MFA_REQUIRED", false),
 			MaintenanceMode:    getBoolEnv("APP_MAINTENANCE_MODE", false),
 			MaintenanceMessage: getEnv("APP_MAINTENANCE_MESSAGE", ""),
-			InquiryBaseURL:     getEnv("INQUIRY_BASE_URL", "https://inquiry.gate.co.id/game"),
+			InquiryBaseURL:     getEnv("INQUIRY_BASE_URL", "https://inquiry.seaply.co/game"),
 			InquiryKey:         getEnv("INQUIRY_KEY", ""),
 		},
 	}

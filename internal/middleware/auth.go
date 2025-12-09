@@ -5,15 +5,15 @@ import (
 	"net/http"
 	"strings"
 
-	"gate-v2/internal/domain"
-	"gate-v2/internal/utils"
+	"seaply/internal/domain"
+	"seaply/internal/utils"
 )
 
 type contextKey string
 
 const (
-	UserContextKey  contextKey = "user"
-	AdminContextKey contextKey = "admin"
+	UserContextKey   contextKey = "user"
+	AdminContextKey  contextKey = "admin"
 	ClaimsContextKey contextKey = "claims"
 )
 
@@ -114,8 +114,8 @@ func (m *AuthMiddleware) RequirePermission(permission string) func(http.Handler)
 			}
 
 			if !hasPermission {
-				utils.WriteErrorJSON(w, http.StatusForbidden, "PERMISSION_DENIED", 
-					"Anda tidak memiliki akses untuk melakukan aksi ini", 
+				utils.WriteErrorJSON(w, http.StatusForbidden, "PERMISSION_DENIED",
+					"Anda tidak memiliki akses untuk melakukan aksi ini",
 					"Required permission: "+permission)
 				return
 			}
@@ -150,8 +150,8 @@ func (m *AuthMiddleware) RequireAnyPermission(permissions ...string) func(http.H
 			}
 
 			if !hasPermission {
-				utils.WriteErrorJSON(w, http.StatusForbidden, "PERMISSION_DENIED", 
-					"Anda tidak memiliki akses untuk melakukan aksi ini", 
+				utils.WriteErrorJSON(w, http.StatusForbidden, "PERMISSION_DENIED",
+					"Anda tidak memiliki akses untuk melakukan aksi ini",
 					"Required one of: "+strings.Join(permissions, ", "))
 				return
 			}
@@ -230,4 +230,3 @@ func HasPermission(ctx context.Context, permission string) bool {
 	}
 	return false
 }
-

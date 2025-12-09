@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"gate-v2/internal/config"
+	"seaply/internal/config"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -89,4 +90,3 @@ func (db *PostgresDB) WithTransaction(ctx context.Context, fn TxFunc) error {
 
 	return nil
 }
-

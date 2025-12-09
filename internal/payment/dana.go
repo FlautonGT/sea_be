@@ -381,7 +381,7 @@ func (d *DANAGateway) buildURLParams(req *PaymentRequest) []payment_gateway.UrlP
 	}
 
 	if len(params) == 0 {
-		params = append(params, *payment_gateway.NewUrlParam("https://"+defaultString(d.cfg.Origin, "gate.co.id"), string(payment_gateway.TYPE_NOTIFICATION_), "false"))
+		params = append(params, *payment_gateway.NewUrlParam("https://"+defaultString(d.cfg.Origin, "seaply.co"), string(payment_gateway.TYPE_NOTIFICATION_), "false"))
 	}
 	return params
 }

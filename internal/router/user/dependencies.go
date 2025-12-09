@@ -1,14 +1,14 @@
 package user
 
 import (
-	"gate-v2/internal/config"
-	"gate-v2/internal/database"
-	"gate-v2/internal/middleware"
-	"gate-v2/internal/payment"
-	"gate-v2/internal/provider"
-	"gate-v2/internal/services"
-	"gate-v2/internal/storage"
-	"gate-v2/internal/utils"
+	"seaply/internal/config"
+	"seaply/internal/database"
+	"seaply/internal/middleware"
+	"seaply/internal/payment"
+	"seaply/internal/provider"
+	"seaply/internal/services"
+	"seaply/internal/storage"
+	"seaply/internal/utils"
 )
 
 // Dependencies matches router.Dependencies structure
@@ -24,4 +24,3 @@ type Dependencies struct {
 	ProviderManager *provider.Manager
 	PaymentManager  *payment.Manager
 }
-

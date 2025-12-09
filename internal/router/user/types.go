@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"gate-v2/internal/utils"
+	"seaply/internal/utils"
 )
 
 // RegisterRequest represents the registration request body
@@ -84,25 +84,25 @@ type MFARequiredResponse struct {
 
 // UserRow represents user data from database
 type UserRow struct {
-	ID              string
-	FirstName       string
-	LastName        *string
-	Email           string
-	PasswordHash    *string
-	PhoneNumber     *string
-	Status          string
-	ProfilePicture  *string
-	PrimaryRegion   string
-	MFAStatus       string
-	MembershipLevel string
-	BalanceIDR      int64
-	BalanceMYR      int64
-	BalancePHP      int64
-	BalanceSGD      int64
-	BalanceTHB      int64
+	ID                string
+	FirstName         string
+	LastName          *string
+	Email             string
+	PasswordHash      *string
+	PhoneNumber       *string
+	Status            string
+	ProfilePicture    *string
+	PrimaryRegion     string
+	MFAStatus         string
+	MembershipLevel   string
+	BalanceIDR        int64
+	BalanceMYR        int64
+	BalancePHP        int64
+	BalanceSGD        int64
+	BalanceTHB        int64
 	TotalTransactions int64
-	TotalSpentIDR   int64
-	EmailVerifiedAt *time.Time
+	TotalSpentIDR     int64
+	EmailVerifiedAt   *time.Time
 }
 
 // generateUserTokens generates access and refresh tokens for user
@@ -148,4 +148,3 @@ func nullString(value string) sql.NullString {
 	}
 	return sql.NullString{String: trimmed, Valid: true}
 }
-

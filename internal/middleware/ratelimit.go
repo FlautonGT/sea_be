@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"gate-v2/internal/database"
-	"gate-v2/internal/utils"
+	"seaply/internal/database"
+	"seaply/internal/utils"
 )
 
 type RateLimiter struct {
@@ -124,4 +124,3 @@ func (rl *RateLimiter) IPRateLimit(cfg RateLimitConfig) func(http.Handler) http.
 		})
 	}
 }
-

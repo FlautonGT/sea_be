@@ -11,8 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"gate-v2/internal/storage"
-	"gate-v2/internal/utils"
+	"seaply/internal/storage"
+	"seaply/internal/utils"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -659,9 +660,9 @@ func HandleUpdateSKUImpl(deps *Dependencies) http.HandlerFunc {
 			var imageURL string
 			if err := json.Unmarshal(raw, &imageURL); err == nil && strings.TrimSpace(imageURL) != "" {
 				newImageURL = strings.TrimSpace(imageURL)
-			updates = append(updates, fmt.Sprintf("image = $%d", argPos))
-			args = append(args, newImageURL)
-			argPos++
+				updates = append(updates, fmt.Sprintf("image = $%d", argPos))
+				args = append(args, newImageURL)
+				argPos++
 			}
 		}
 

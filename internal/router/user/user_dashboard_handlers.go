@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"gate-v2/internal/middleware"
-	"gate-v2/internal/utils"
+	"seaply/internal/middleware"
+	"seaply/internal/utils"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -843,7 +843,7 @@ func HandleCreateDepositImpl(deps *Dependencies) http.HandlerFunc {
 			paymentData["qrCodeImage"] = "https://nos.jkt-1.neo.id/gate/qr/" + invoiceNumber + ".png"
 		} else if req.PaymentCode == "BCA_VA" || req.PaymentCode == "BRI_VA" {
 			paymentData["accountNumber"] = "80777" + invoiceNumber[3:18]
-			paymentData["accountName"] = "GATE TOPUP"
+			paymentData["accountName"] = "Seaply Indonesia"
 		}
 
 		utils.WriteSuccessJSON(w, map[string]interface{}{

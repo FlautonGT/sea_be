@@ -9,15 +9,15 @@ import (
 	"syscall"
 	"time"
 
-	"gate-v2/internal/config"
-	"gate-v2/internal/database"
-	"gate-v2/internal/middleware"
-	"gate-v2/internal/payment"
-	"gate-v2/internal/provider"
-	"gate-v2/internal/router"
-	"gate-v2/internal/services"
-	"gate-v2/internal/storage"
-	"gate-v2/internal/utils"
+	"seaply/internal/config"
+	"seaply/internal/database"
+	"seaply/internal/middleware"
+	"seaply/internal/payment"
+	"seaply/internal/provider"
+	"seaply/internal/router"
+	"seaply/internal/services"
+	"seaply/internal/storage"
+	"seaply/internal/utils"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -42,7 +42,7 @@ func main() {
 	log.Info().
 		Str("environment", cfg.Server.Environment).
 		Str("port", cfg.Server.Port).
-		Msg("Starting Gate Backend API")
+		Msg("Starting Seaply Backend API")
 
 	// Initialize database
 	db, err := database.NewPostgresDB(cfg.Database)
@@ -282,7 +282,7 @@ func initializePaymentGateways(cfg *config.Config) *payment.Manager {
 				Str("private_key_path", cfg.Payment.BRI.PrivateKeyPath).
 				Msg("Failed to initialize BRI gateway")
 		} else {
-		manager.Register(bri)
+			manager.Register(bri)
 			log.Info().Msg("Registered BRI gateway (VA BRI via SNAP API)")
 		}
 	} else {
@@ -315,8 +315,8 @@ func initializePaymentGateways(cfg *config.Config) *payment.Manager {
 		if err != nil {
 			log.Warn().Err(err).Msg("Failed to initialize Midtrans gateway")
 		} else {
-		manager.Register(midtrans)
-		log.Info().Msg("Registered Midtrans gateway (GoPay, ShopeePay)")
+			manager.Register(midtrans)
+			log.Info().Msg("Registered Midtrans gateway (GoPay, ShopeePay)")
 		}
 	}
 

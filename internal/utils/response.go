@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"gate-v2/internal/domain"
+	"seaply/internal/domain"
 )
 
 // WriteJSON writes a JSON response
@@ -76,7 +76,7 @@ func WriteUnauthorizedError(w http.ResponseWriter) {
 }
 
 func WriteForbiddenError(w http.ResponseWriter, permission string) {
-	WriteErrorJSON(w, http.StatusForbidden, "PERMISSION_DENIED", 
+	WriteErrorJSON(w, http.StatusForbidden, "PERMISSION_DENIED",
 		"Anda tidak memiliki akses untuk melakukan aksi ini",
 		"Required permission: "+permission)
 }
@@ -93,4 +93,3 @@ func WriteBadRequestError(w http.ResponseWriter, message string) {
 func WriteConflictError(w http.ResponseWriter, message string) {
 	WriteErrorJSON(w, http.StatusConflict, "CONFLICT", message, "")
 }
-

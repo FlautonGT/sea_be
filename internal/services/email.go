@@ -27,7 +27,7 @@ func NewEmailService() *EmailService {
 		SMTPUser:     getEnv("SMTP_USER", ""),
 		SMTPPassword: getEnv("SMTP_PASSWORD", ""),
 		FromName:     getEnv("SMTP_FROM_NAME", "Seaply"),
-		FromEmail:    getEnv("SMTP_FROM_EMAIL", "noreply@gate.co.id"),
+		FromEmail:    getEnv("SMTP_FROM_EMAIL", "noreply@seaply.co"),
 		AppURL:       getEnv("APP_URL", "http://localhost:3000"),
 	}
 }
@@ -85,9 +85,9 @@ func (e *EmailService) SendVerificationEmail(to, firstName, verificationToken st
         <div style="text-align: center; padding: 20px; color: #9ca3af; font-size: 12px;">
             <p style="margin: 5px 0;">&copy; 2025 Seaply. All rights reserved.</p>
             <p style="margin: 5px 0;">
-                <a href="https://gate.co.id" style="color: #667eea; text-decoration: none;">Website</a> |
-                <a href="https://gate.co.id/terms" style="color: #667eea; text-decoration: none;">Terms</a> |
-                <a href="https://gate.co.id/privacy" style="color: #667eea; text-decoration: none;">Privacy</a>
+                <a href="https://seaply.co" style="color: #667eea; text-decoration: none;">Website</a> |
+                <a href="https://seaply.co/terms" style="color: #667eea; text-decoration: none;">Terms</a> |
+                <a href="https://seaply.co/privacy" style="color: #667eea; text-decoration: none;">Privacy</a>
             </p>
         </div>
     </div>

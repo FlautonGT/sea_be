@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"gate-v2/internal/config"
+	"seaply/internal/config"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -171,16 +172,16 @@ func (r *RedisClient) Subscribe(ctx context.Context, channels ...string) *redis.
 
 // Cache key builders
 const (
-	CacheKeyUserPrefix        = "user:"
-	CacheKeyAdminPrefix       = "admin:"
-	CacheKeySessionPrefix     = "session:"
-	CacheKeyProductPrefix     = "product:"
-	CacheKeySKUPrefix         = "sku:"
-	CacheKeyRegionPrefix      = "region:"
-	CacheKeyPromoPrefix       = "promo:"
-	CacheKeyRateLimitPrefix   = "ratelimit:"
-	CacheKeyValidationPrefix  = "validation:"
-	CacheKeyMFAPrefix         = "mfa:"
+	CacheKeyUserPrefix       = "user:"
+	CacheKeyAdminPrefix      = "admin:"
+	CacheKeySessionPrefix    = "session:"
+	CacheKeyProductPrefix    = "product:"
+	CacheKeySKUPrefix        = "sku:"
+	CacheKeyRegionPrefix     = "region:"
+	CacheKeyPromoPrefix      = "promo:"
+	CacheKeyRateLimitPrefix  = "ratelimit:"
+	CacheKeyValidationPrefix = "validation:"
+	CacheKeyMFAPrefix        = "mfa:"
 )
 
 func (r *RedisClient) UserCacheKey(userID string) string {
@@ -253,4 +254,3 @@ func (r *RedisClient) deleteByPattern(ctx context.Context, pattern string) error
 	}
 	return nil
 }
-

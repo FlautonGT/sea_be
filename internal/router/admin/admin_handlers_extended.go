@@ -9,7 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"gate-v2/internal/utils"
+	"seaply/internal/utils"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -346,18 +347,18 @@ func HandleGetPaymentGatewaysImpl(deps *Dependencies) http.HandlerFunc {
 			stats := getGatewayStats(ctx, deps, id)
 
 			gateway := map[string]interface{}{
-				"id":              id.String(),
-				"code":            code,
-				"name":            name,
-				"baseUrl":         baseURL,
-				"callbackUrl":     callbackURL.String,
-				"isActive":        isActive,
+				"id":               id.String(),
+				"code":             code,
+				"name":             name,
+				"baseUrl":          baseURL,
+				"callbackUrl":      callbackURL.String,
+				"isActive":         isActive,
 				"supportedMethods": supportedMethods,
-				"supportedTypes":  supportedTypes,
-				"healthStatus":    "HEALTHY",
-				"stats":           stats,
-				"createdAt":       createdAt.Format(time.RFC3339),
-				"updatedAt":       updatedAt.Format(time.RFC3339),
+				"supportedTypes":   supportedTypes,
+				"healthStatus":     "HEALTHY",
+				"stats":            stats,
+				"createdAt":        createdAt.Format(time.RFC3339),
+				"updatedAt":        updatedAt.Format(time.RFC3339),
 			}
 
 			if healthStatus.Valid && healthStatus.String != "" {
@@ -411,16 +412,16 @@ func HandleCreatePaymentGatewayImpl(deps *Dependencies) http.HandlerFunc {
 		defer cancel()
 
 		var req struct {
-			Code             string                 `json:"code"`
-			Name             string                 `json:"name"`
-			BaseURL          string                 `json:"baseUrl"`
-			CallbackURL      string                 `json:"callbackUrl"`
-			IsActive         bool                   `json:"isActive"`
-			SupportedMethods []string               `json:"supportedMethods"`
-			SupportedTypes   []string               `json:"supportedTypes"`
-			APIConfig        map[string]interface{} `json:"apiConfig"`
-			Mapping          map[string][]string    `json:"mapping"`
-			EnvCredentialKeys map[string]string     `json:"envCredentialKeys"`
+			Code              string                 `json:"code"`
+			Name              string                 `json:"name"`
+			BaseURL           string                 `json:"baseUrl"`
+			CallbackURL       string                 `json:"callbackUrl"`
+			IsActive          bool                   `json:"isActive"`
+			SupportedMethods  []string               `json:"supportedMethods"`
+			SupportedTypes    []string               `json:"supportedTypes"`
+			APIConfig         map[string]interface{} `json:"apiConfig"`
+			Mapping           map[string][]string    `json:"mapping"`
+			EnvCredentialKeys map[string]string      `json:"envCredentialKeys"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -547,15 +548,15 @@ func HandleUpdatePaymentGatewayImpl(deps *Dependencies) http.HandlerFunc {
 		}
 
 		var req struct {
-			Name             *string               `json:"name"`
-			BaseURL          *string               `json:"baseUrl"`
-			CallbackURL      *string               `json:"callbackUrl"`
-			IsActive         *bool                 `json:"isActive"`
-			SupportedMethods *[]string             `json:"supportedMethods"`
-			SupportedTypes   *[]string             `json:"supportedTypes"`
-			APIConfig        map[string]interface{} `json:"apiConfig"`
-			Mapping          map[string][]string   `json:"mapping"`
-			EnvCredentialKeys map[string]string    `json:"envCredentialKeys"`
+			Name              *string                `json:"name"`
+			BaseURL           *string                `json:"baseUrl"`
+			CallbackURL       *string                `json:"callbackUrl"`
+			IsActive          *bool                  `json:"isActive"`
+			SupportedMethods  *[]string              `json:"supportedMethods"`
+			SupportedTypes    *[]string              `json:"supportedTypes"`
+			APIConfig         map[string]interface{} `json:"apiConfig"`
+			Mapping           map[string][]string    `json:"mapping"`
+			EnvCredentialKeys map[string]string      `json:"envCredentialKeys"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -816,22 +817,22 @@ func fetchPaymentGatewayDetail(ctx context.Context, deps *Dependencies, gatewayI
 	feeConfig := getGatewayFeeConfig(ctx, deps, gatewayID)
 
 	detail := map[string]interface{}{
-		"id":              gatewayID.String(),
-		"code":            code,
-		"name":            name,
-		"baseUrl":         baseURL,
-		"callbackUrl":     callbackURL.String,
-		"isActive":        isActive,
+		"id":               gatewayID.String(),
+		"code":             code,
+		"name":             name,
+		"baseUrl":          baseURL,
+		"callbackUrl":      callbackURL.String,
+		"isActive":         isActive,
 		"supportedMethods": supportedMethods,
-		"supportedTypes":  supportedTypes,
-		"healthStatus":    "HEALTHY",
-		"apiConfig":       apiConfig,
-		"mapping":         statusMapping,
-		"credentials":     credentials,
-		"feeConfig":       feeConfig,
-		"stats":           stats,
-		"createdAt":       createdAt.Format(time.RFC3339),
-		"updatedAt":       updatedAt.Format(time.RFC3339),
+		"supportedTypes":   supportedTypes,
+		"healthStatus":     "HEALTHY",
+		"apiConfig":        apiConfig,
+		"mapping":          statusMapping,
+		"credentials":      credentials,
+		"feeConfig":        feeConfig,
+		"stats":            stats,
+		"createdAt":        createdAt.Format(time.RFC3339),
+		"updatedAt":        updatedAt.Format(time.RFC3339),
 	}
 
 	if healthStatus.Valid && healthStatus.String != "" {
@@ -1177,16 +1178,16 @@ func HandleCreateProviderImpl(deps *Dependencies) http.HandlerFunc {
 		defer cancel()
 
 		var req struct {
-			Code             string              `json:"code"`
-			Name             string              `json:"name"`
-			BaseURL          string              `json:"baseUrl"`
-			WebhookURL       string              `json:"webhookUrl"`
-			IsActive         bool                `json:"isActive"`
-			Priority         int                 `json:"priority"`
-			SupportedTypes   []string            `json:"supportedTypes"`
-			APIConfig        map[string]interface{} `json:"apiConfig"`
-			Mapping          map[string][]string `json:"mapping"`
-			EnvCredentialKeys map[string]string  `json:"envCredentialKeys"`
+			Code              string                 `json:"code"`
+			Name              string                 `json:"name"`
+			BaseURL           string                 `json:"baseUrl"`
+			WebhookURL        string                 `json:"webhookUrl"`
+			IsActive          bool                   `json:"isActive"`
+			Priority          int                    `json:"priority"`
+			SupportedTypes    []string               `json:"supportedTypes"`
+			APIConfig         map[string]interface{} `json:"apiConfig"`
+			Mapping           map[string][]string    `json:"mapping"`
+			EnvCredentialKeys map[string]string      `json:"envCredentialKeys"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1284,11 +1285,11 @@ func HandleCreateProviderImpl(deps *Dependencies) http.HandlerFunc {
 		}
 
 		utils.WriteCreatedJSON(w, map[string]interface{}{
-			"id":             id.String(),
-			"code":           req.Code,
-			"name":           req.Name,
-			"baseUrl":        req.BaseURL,
-			"message":        "Provider created. Please add credentials to .env file",
+			"id":              id.String(),
+			"code":            req.Code,
+			"name":            req.Name,
+			"baseUrl":         req.BaseURL,
+			"message":         "Provider created. Please add credentials to .env file",
 			"requiredEnvVars": requiredEnvVars,
 		})
 	}
@@ -1311,15 +1312,15 @@ func HandleUpdateProviderImpl(deps *Dependencies) http.HandlerFunc {
 		}
 
 		var req struct {
-			Name             *string             `json:"name"`
-			BaseURL          *string             `json:"baseUrl"`
-			WebhookURL       *string             `json:"webhookUrl"`
-			IsActive         *bool               `json:"isActive"`
-			Priority         *int                `json:"priority"`
-			SupportedTypes   *[]string           `json:"supportedTypes"`
-			APIConfig        map[string]interface{} `json:"apiConfig"`
-			Mapping          map[string][]string `json:"mapping"`
-			EnvCredentialKeys map[string]string  `json:"envCredentialKeys"`
+			Name              *string                `json:"name"`
+			BaseURL           *string                `json:"baseUrl"`
+			WebhookURL        *string                `json:"webhookUrl"`
+			IsActive          *bool                  `json:"isActive"`
+			Priority          *int                   `json:"priority"`
+			SupportedTypes    *[]string              `json:"supportedTypes"`
+			APIConfig         map[string]interface{} `json:"apiConfig"`
+			Mapping           map[string][]string    `json:"mapping"`
+			EnvCredentialKeys map[string]string      `json:"envCredentialKeys"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1480,10 +1481,10 @@ func HandleTestProviderImpl(deps *Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Placeholder - would need actual provider integration
 		utils.WriteSuccessJSON(w, map[string]interface{}{
-			"status":      "SUCCESS",
+			"status":       "SUCCESS",
 			"responseTime": 850,
-			"balance":     15000000,
-			"message":     "Connection successful",
+			"balance":      15000000,
+			"message":      "Connection successful",
 		})
 	}
 }
@@ -1687,4 +1688,3 @@ func HandleGetDashboardImpl(deps *Dependencies) http.HandlerFunc {
 		})
 	}
 }
-

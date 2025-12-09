@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"time"
 
-	"gate-v2/internal/utils"
+	"seaply/internal/utils"
 
 	"github.com/jackc/pgx/v5"
 )

@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"gate-v2/internal/domain"
-	"gate-v2/internal/middleware"
-	"gate-v2/internal/utils"
+	"seaply/internal/domain"
+	"seaply/internal/middleware"
+	"seaply/internal/utils"
 
 	"github.com/jackc/pgx/v5"
 )

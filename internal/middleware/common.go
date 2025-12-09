@@ -6,13 +6,14 @@ import (
 	"runtime/debug"
 	"time"
 
-	"gate-v2/internal/utils"
+	"seaply/internal/utils"
+
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 )
 
 const (
-	RegionContextKey contextKey = "region"
+	RegionContextKey    contextKey = "region"
 	RequestIDContextKey contextKey = "request_id"
 )
 
@@ -23,11 +24,11 @@ func RequestID(next http.Handler) http.Handler {
 		if requestID == "" {
 			requestID = uuid.New().String()
 		}
-		
+
 		w.Header().Set("X-Request-ID", requestID)
 		ctx := context.WithValue(r.Context(), RequestIDContextKey, requestID)
 		r = r.WithContext(ctx)
-		
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -48,7 +49,7 @@ func Recoverer(next http.Handler) http.Handler {
 					"Terjadi kesalahan internal server", "")
 			}
 		}()
-		
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -61,7 +62,7 @@ func Timeout(timeout time.Duration) func(http.Handler) http.Handler {
 			defer cancel()
 
 			r = r.WithContext(ctx)
-			
+
 			done := make(chan struct{})
 			go func() {
 				next.ServeHTTP(w, r)
@@ -106,7 +107,7 @@ func RegionValidator(defaultRegion string) func(http.Handler) http.Handler {
 
 			ctx := context.WithValue(r.Context(), RegionContextKey, region)
 			r = r.WithContext(ctx)
-			
+
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -117,14 +118,14 @@ func ContentType(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
 			ct := r.Header.Get("Content-Type")
-			if ct != "" && ct != "application/json" && 
-			   !isMultipartFormData(ct) {
+			if ct != "" && ct != "application/json" &&
+				!isMultipartFormData(ct) {
 				utils.WriteErrorJSON(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE",
 					"Content-Type must be application/json or multipart/form-data", "")
 				return
 			}
 		}
-		
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -173,8 +174,7 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'")
-		
+
 		next.ServeHTTP(w, r)
 	})
 }
-

@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"gate-v2/internal/middleware"
-	"gate-v2/internal/storage"
-	"gate-v2/internal/utils"
+	"seaply/internal/middleware"
+	"seaply/internal/storage"
+	"seaply/internal/utils"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"

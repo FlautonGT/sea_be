@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"gate-v2/internal/utils"
+	"seaply/internal/utils"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -239,4 +239,3 @@ func generateAdminTokens(deps *Dependencies, admin AdminRow, permissions []strin
 
 	return accessToken, refreshToken, nil
 }
-

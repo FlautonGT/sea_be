@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"gate-v2/internal/config"
+	"seaply/internal/config"
+
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -22,7 +23,7 @@ type JWTService interface {
 type TokenClaims struct {
 	jwt.RegisteredClaims
 	UserID      string   `json:"userId"` // Subject (user/admin ID)
-	Type        string   `json:"type"` // user or admin
+	Type        string   `json:"type"`   // user or admin
 	Email       string   `json:"email,omitempty"`
 	Role        string   `json:"role,omitempty"`
 	Permissions []string `json:"permissions,omitempty"`
@@ -55,7 +56,7 @@ func (s *jwtService) GenerateAccessToken(claims TokenClaims) (string, error) {
 		Subject:   claims.UserID,
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(s.cfg.AccessTokenExpiry)),
-		Issuer:    "gate.co.id",
+		Issuer:    "seaply.co",
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -67,7 +68,7 @@ func (s *jwtService) GenerateRefreshToken(subject string, tokenType string) (str
 		Subject:   subject,
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(s.cfg.RefreshTokenExpiry)),
-		Issuer:    "gate.co.id",
+		Issuer:    "seaply.co",
 		Audience:  jwt.ClaimStrings{tokenType + "_refresh"},
 	}
 
@@ -80,7 +81,7 @@ func (s *jwtService) GenerateMFAToken(subject string, tokenType string) (string,
 		Subject:   subject,
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(s.cfg.MFATokenExpiry)),
-		Issuer:    "gate.co.id",
+		Issuer:    "seaply.co",
 		Audience:  jwt.ClaimStrings{tokenType + "_mfa"},
 	}
 
@@ -93,7 +94,7 @@ func (s *jwtService) GenerateValidationToken(data map[string]interface{}) (strin
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(s.cfg.ValidationTokenExpiry)),
-			Issuer:    "gate.co.id",
+			Issuer:    "seaply.co",
 			Audience:  jwt.ClaimStrings{"validation"},
 		},
 		Data: data,
@@ -166,4 +167,3 @@ func (s *jwtService) ValidateValidationToken(tokenString string) (map[string]int
 
 	return claims.Data, nil
 }
-

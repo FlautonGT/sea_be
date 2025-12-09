@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"gate-v2/internal/middleware"
-	"gate-v2/internal/storage"
-	"gate-v2/internal/utils"
+	"seaply/internal/middleware"
+	"seaply/internal/storage"
+	"seaply/internal/utils"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -29,8 +29,8 @@ func HandleGetSettingsImpl(deps *Dependencies) http.HandlerFunc {
 		// Mock settings data
 		utils.WriteSuccessJSON(w, map[string]interface{}{
 			"general": map[string]interface{}{
-				"siteName":           "Gate.co.id",
-				"siteDescription":    "Top Up Game & Voucher Digital Terpercaya",
+				"siteName":           "Seaply.co",
+				"siteDescription":    "SEA Gaming Supply",
 				"maintenanceMode":    false,
 				"maintenanceMessage": nil,
 			},
@@ -91,14 +91,14 @@ func HandleGetContactSettingsImpl(deps *Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Mock contact settings
 		utils.WriteSuccessJSON(w, map[string]interface{}{
-			"email":     "support@gate.co.id",
+			"email":     "support@seaply.co",
 			"phone":     "+6281234567890",
 			"whatsapp":  "https://wa.me/6281234567890",
-			"instagram": "https://instagram.com/gate.official",
-			"facebook":  "https://facebook.com/gate.official",
-			"x":         "https://x.com/gate_official",
-			"youtube":   "https://youtube.com/@gateofficial",
-			"telegram":  "https://t.me/gate_official",
+			"instagram": "https://instagram.com/seaply.official",
+			"facebook":  "https://facebook.com/seaply.official",
+			"x":         "https://x.com/seaply_official",
+			"youtube":   "https://youtube.com/@seaplyofficial",
+			"telegram":  "https://t.me/seaply_official",
 			"discord":   "https://discord.gg/gate",
 		})
 	}
@@ -2191,7 +2191,7 @@ type UpdatePaymentChannelRequest struct {
 	Description    *string  `json:"description"`
 	Image          *string  `json:"image"`
 	CategoryCode   *string  `json:"categoryCode"`
-	FeeType        *string  `json:"feeType"`     // FIXED, PERCENTAGE, MIXED
+	FeeType        *string  `json:"feeType"` // FIXED, PERCENTAGE, MIXED
 	FeeAmount      *int64   `json:"feeAmount"`
 	FeePercentage  *float64 `json:"feePercentage"`
 	MinAmount      *int64   `json:"minAmount"`

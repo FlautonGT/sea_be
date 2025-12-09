@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"gate-v2/internal/middleware"
-	"gate-v2/internal/utils"
+	"seaply/internal/middleware"
+	"seaply/internal/utils"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -1280,34 +1280,34 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 		// Query transaction with related data using joins
 		// Note: Prices in database are stored in rupiah (not cents)
 		var (
-			id               string
-			status           string
-			paymentStatus    string
-			productCode      string
-			productName      string
-			skuCode          string
-			skuName          string
-			quantity         int
-			buyPrice         int64
-			sellPrice        int64
-			discount         int64
-			paymentFee       int64
-			total            int64
-			currency         string
-			paymentCode      string
-			paymentName      string
+			id                  string
+			status              string
+			paymentStatus       string
+			productCode         string
+			productName         string
+			skuCode             string
+			skuName             string
+			quantity            int
+			buyPrice            int64
+			sellPrice           int64
+			discount            int64
+			paymentFee          int64
+			total               int64
+			currency            string
+			paymentCode         string
+			paymentName         string
 			paymentCategoryCode *string
-			providerResponse *string
-			accountNickname  *string
-			accountInputs    string
-			email            *string
-			phoneNumber      *string
-			serialNumber     *string
-			paidAt           *time.Time
-			processedAt      *time.Time
-			completedAt      *time.Time
-			expiredAt        time.Time
-			createdAt        time.Time
+			providerResponse    *string
+			accountNickname     *string
+			accountInputs       string
+			email               *string
+			phoneNumber         *string
+			serialNumber        *string
+			paidAt              *time.Time
+			processedAt         *time.Time
+			completedAt         *time.Time
+			expiredAt           time.Time
+			createdAt           time.Time
 		)
 
 		err := deps.DB.Pool.QueryRow(ctx, `
@@ -1464,12 +1464,12 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 			"code": paymentCode,
 			"name": paymentName,
 		}
-		
+
 		// Add payment category code if available
 		if paymentCategoryCode != nil && *paymentCategoryCode != "" {
 			payment["categoryCode"] = *paymentCategoryCode
 		}
-		
+
 		// Parse and add payment data from provider_response
 		if providerResponse != nil && *providerResponse != "" {
 			var paymentData map[string]interface{}
@@ -1481,7 +1481,7 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 				if pType, ok := paymentData["paymentType"].(string); ok && pType != "" {
 					payment["paymentType"] = pType
 				}
-				
+
 				// Additional data for specific payment types
 				if bankCode, ok := paymentData["bankCode"].(string); ok && bankCode != "" {
 					payment["bankCode"] = bankCode
@@ -1492,24 +1492,24 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 				if deeplink, ok := paymentData["deeplink"].(string); ok && deeplink != "" {
 					payment["deeplink"] = deeplink
 				}
-				
+
 				// Instructions
 				if instructions, ok := paymentData["instructions"].([]interface{}); ok && len(instructions) > 0 {
 					payment["instructions"] = instructions
 				}
-				
+
 				// Expiry from payment data
 				if paymentExpiredAt, ok := paymentData["expiredAt"].(string); ok && paymentExpiredAt != "" {
 					payment["expiredAt"] = paymentExpiredAt
 				}
 			}
 		}
-		
+
 		// Add expiredAt if not already set from payment data
 		if _, hasExpiry := payment["expiredAt"]; !hasExpiry {
 			payment["expiredAt"] = expiredAt.Format(time.RFC3339)
 		}
-		
+
 		if paidAt != nil {
 			payment["paidAt"] = paidAt.Format(time.RFC3339)
 		}
@@ -1547,4 +1547,3 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 		utils.WriteSuccessJSON(w, response)
 	}
 }
-

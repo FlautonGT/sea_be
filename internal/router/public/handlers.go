@@ -12,10 +12,10 @@ import (
 
 	"unsafe"
 
-	"gate-v2/internal/domain"
-	"gate-v2/internal/middleware"
-	"gate-v2/internal/router/user"
-	"gate-v2/internal/utils"
+	"seaply/internal/domain"
+	"seaply/internal/middleware"
+	"seaply/internal/router/user"
+	"seaply/internal/utils"
 
 	"github.com/rs/zerolog/log"
 )
@@ -420,17 +420,17 @@ func HandleValidatePromo(deps *Dependencies) http.HandlerFunc {
 
 		// Build success response
 		response := map[string]interface{}{
-			"valid":           true,
-			"promoCode":       promoCode,
-			"title":           promoTitle,
-			"description":     promoDesc,
-			"discountAmount":  math.Round(discountAmount*100) / 100,
+			"valid":          true,
+			"promoCode":      promoCode,
+			"title":          promoTitle,
+			"description":    promoDesc,
+			"discountAmount": math.Round(discountAmount*100) / 100,
 			"requirements": map[string]interface{}{
-				"minAmount":            minAmount,
-				"applicableProducts":   applicableProducts,
-				"applicablePayments":   applicablePayments,
-				"applicableRegions":    applicableRegions,
-				"validDays":            daysAvailable,
+				"minAmount":          minAmount,
+				"applicableProducts": applicableProducts,
+				"applicablePayments": applicablePayments,
+				"applicableRegions":  applicableRegions,
+				"validDays":          daysAvailable,
 			},
 			"usage": map[string]interface{}{
 				"used":      totalUsage,
@@ -454,13 +454,13 @@ func HandleQRGenerate(_ *Dependencies) http.HandlerFunc {
 			utils.WriteBadRequestError(w, "data parameter required")
 			return
 		}
-		
+
 		qrCode, err := utils.GenerateQRCode(data, 256)
 		if err != nil {
 			utils.WriteInternalServerError(w)
 			return
 		}
-		
+
 		w.Header().Set("Content-Type", "image/png")
 		w.Write(qrCode)
 	}
@@ -766,7 +766,7 @@ func HandleBRIWebhook(deps *Dependencies) http.HandlerFunc {
 // sendBRIWebhookResponse sends BRI webhook response in required format
 func sendBRIWebhookResponse(w http.ResponseWriter, responseCode, responseMessage string) {
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	// Determine HTTP status based on response code
 	httpStatus := http.StatusOK
 	if strings.HasPrefix(responseCode, "4") {
@@ -1183,4 +1183,3 @@ func HandleDANAWebhook(deps *Dependencies) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 	}
 }
-

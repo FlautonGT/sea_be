@@ -9,11 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"seaply/internal/config"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"gate-v2/internal/config"
 	"github.com/google/uuid"
 )
 
@@ -129,7 +130,7 @@ func (s *S3Storage) UploadWithOriginalName(ctx context.Context, folder FolderTyp
 	originalName := filepath.Base(header.Filename)
 	ext := filepath.Ext(originalName)
 	nameWithoutExt := strings.TrimSuffix(originalName, ext)
-	
+
 	// Sanitize: keep alphanumeric, dash, underscore, and dots
 	var sanitized strings.Builder
 	for _, r := range nameWithoutExt {
@@ -139,21 +140,21 @@ func (s *S3Storage) UploadWithOriginalName(ctx context.Context, folder FolderTyp
 			sanitized.WriteRune('_')
 		}
 	}
-	
+
 	sanitizedName := sanitized.String()
-	
+
 	// Limit length to 100 characters
 	if len(sanitizedName) > 100 {
 		sanitizedName = sanitizedName[:100]
 	}
-	
+
 	// Reconstruct filename with extension
 	filename := sanitizedName + ext
 	if filename == ext || sanitizedName == "" {
 		// If name is empty after sanitization, use a default with timestamp
 		filename = fmt.Sprintf("image_%d%s", time.Now().Unix(), ext)
 	}
-	
+
 	key := fmt.Sprintf("%s/%s", folder, filename)
 
 	// Detect content type
@@ -279,7 +280,7 @@ func (s *S3Storage) GetKeyFromURL(url string) string {
 // GetPresignedURL generates a presigned URL for temporary access
 func (s *S3Storage) GetPresignedURL(ctx context.Context, key string, expiry time.Duration) (string, error) {
 	presignClient := s3.NewPresignClient(s.client)
-	
+
 	request, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
@@ -368,10 +369,10 @@ func detectContentType(ext string) string {
 // Validate file type
 func ValidateImageFile(header *multipart.FileHeader) error {
 	allowedTypes := map[string]bool{
-		"image/jpeg": true,
-		"image/png":  true,
-		"image/gif":  true,
-		"image/webp": true,
+		"image/jpeg":    true,
+		"image/png":     true,
+		"image/gif":     true,
+		"image/webp":    true,
 		"image/svg+xml": true,
 	}
 
@@ -402,4 +403,3 @@ func ValidateExportFile(header *multipart.FileHeader) error {
 
 	return nil
 }
-
