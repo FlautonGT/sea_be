@@ -169,7 +169,7 @@ type DANAConfig struct {
 
 type AppConfig struct {
 	Name               string
-	BaseURL            string // API Gateway URL (e.g., https://gateway.gate.id)
+	BaseURL            string // API Gateway URL (e.g., https://gateway.seaply.co)
 	FrontendBaseURL    string // Frontend URL (e.g., https://gate.co.id)
 	AdminBaseURL       string
 	DefaultRegion      string
