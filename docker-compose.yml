@@ -1,0 +1,190 @@
+services:
+  # ============================================
+  # PostgreSQL Database
+  # ============================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: gate_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-gate}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-gate_secret_password}
+      POSTGRES_DB: ${DB_NAME:-gate_db}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - gate_network
+
+  # ============================================
+  # Redis Cache
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: gate_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-gate_redis_password}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-gate_redis_password}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - gate_network
+
+  # ============================================
+  # Redis Commander (Optional - for development)
+  # ============================================
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: gate_redis_commander
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:${REDIS_PASSWORD:-gate_redis_password}
+    ports:
+      - "${REDIS_COMMANDER_PORT:-8081}:8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - gate_network
+    profiles:
+      - dev
+
+  # ============================================
+  # Gate API Application
+  # ============================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gate_api
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      # Database
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-gate}
+      DB_PASSWORD: ${DB_PASSWORD:-gate_secret_password}
+      DB_NAME: ${DB_NAME:-gate_db}
+      DB_SSL_MODE: disable
+      
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-gate_redis_password}
+      REDIS_DB: 0
+      
+      # App
+      APP_ENV: ${APP_ENV:-production}
+      APP_PORT: 8080
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - gate_network
+    volumes:
+      - uploads_data:/app/uploads
+      - ./keys:/app/keys:ro  # Mount keys directory for payment gateway private keys
+
+  # ============================================
+  # Nginx Reverse Proxy (Production)
+  # ============================================
+  nginx:
+    image: nginx:alpine
+    container_name: gate_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - uploads_data:/var/www/uploads:ro
+    depends_on:
+      - api
+    networks:
+      - gate_network
+    profiles:
+      - production
+
+  # ============================================
+  # PgAdmin (Optional - for development)
+  # ============================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: gate_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@gate.co.id}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin123}
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - gate_network
+    profiles:
+      - dev
+
+  # ============================================
+  # Migration Runner (Run manually with: docker compose run --rm migrate up)
+  # ============================================
+  migrate:
+    image: migrate/migrate:latest
+    container_name: gate_migrate
+    volumes:
+      - ./migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - gate_network
+    entrypoint: >
+      migrate -path=/migrations 
+      -database "postgres://${DB_USER:-gate}:${DB_PASSWORD:-gate_secret_password}@postgres:5432/${DB_NAME:-gate_db}?sslmode=disable"
+    profiles:
+      - tools
+
+# ============================================
+# Networks
+# ============================================
+networks:
+  gate_network:
+    driver: bridge
+
+# ============================================
+# Volumes (Data persists across container restarts)
+# ============================================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+  uploads_data:
+    driver: local
