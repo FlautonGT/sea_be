@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS public.payment_channel_regions;
