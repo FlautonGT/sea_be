@@ -27,6 +27,15 @@ import (
 )
 
 func main() {
+	// Set timezone to Asia/Jakarta
+	loc, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to load Asia/Jakarta timezone, using system default")
+	} else {
+		time.Local = loc
+		log.Info().Str("timezone", "Asia/Jakarta").Msg("Timezone set to Asia/Jakarta")
+	}
+
 	// Setup logger
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	if os.Getenv("ENVIRONMENT") == "development" {
@@ -195,7 +204,7 @@ func initializeProviders(cfg *config.Config) *provider.Manager {
 			cfg.Provider.Digiflazz.Username,
 			cfg.Provider.Digiflazz.APIKey,
 			cfg.Provider.Digiflazz.WebhookSecret,
-			cfg.Server.Environment == "production",
+			cfg.Provider.Digiflazz.IsProduction,
 		)
 		manager.Register(digiflazz)
 		log.Info().Msg("Registered Digiflazz provider")
@@ -342,6 +351,25 @@ func initializePaymentGateways(cfg *config.Config) *payment.Manager {
 		} else {
 			manager.Register(dana)
 			log.Info().Msg("Registered DANA gateway")
+		}
+	}
+
+	// Initialize PakaiLink gateway (Virtual Account)
+	if cfg.Payment.PakaiLink.ClientKey != "" && cfg.Payment.PakaiLink.ClientSecret != "" {
+		pakailink, err := payment.NewPakaiLinkGateway(payment.PakaiLinkGatewayConfig{
+			ClientKey:      cfg.Payment.PakaiLink.ClientKey,
+			ClientSecret:   cfg.Payment.PakaiLink.ClientSecret,
+			PartnerID:      cfg.Payment.PakaiLink.PartnerID,
+			PrivateKeyPath: cfg.Payment.PakaiLink.PrivateKeyPath,
+			BaseURL:        cfg.Payment.PakaiLink.BaseURL,
+			CallbackURL:    cfg.Payment.PakaiLink.CallbackURL,
+			IsProduction:   cfg.Payment.PakaiLink.IsProduction,
+		})
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to initialize PakaiLink gateway")
+		} else {
+			manager.Register(pakailink)
+			log.Info().Msg("Registered PakaiLink gateway (Virtual Account)")
 		}
 	}
 

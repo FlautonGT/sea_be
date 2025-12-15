@@ -14,19 +14,19 @@ import (
 )
 
 const (
-	invoicePrefix       = "SEA"
-	depositPrefix       = "SEA"
+	invoicePrefix       = "SEAI"
+	depositPrefix       = "SEAD"
 	invoiceRandomLength = 20
 )
 
 // GenerateInvoiceNumber generates a unique invoice number
-// Format: SEA + random alphanumeric (total 23 chars)
+// Format: SEAI + random alphanumeric (total 24 chars)
 func GenerateInvoiceNumber() string {
 	return generateRandomID(invoicePrefix, invoiceRandomLength)
 }
 
 // GenerateDepositInvoiceNumber generates a unique deposit invoice number
-// Format: SEA + random alphanumeric (total 23 chars)
+// Format: SEAD + random alphanumeric (total 24 chars)
 func GenerateDepositInvoiceNumber() string {
 	return generateRandomID(depositPrefix, invoiceRandomLength)
 }
@@ -41,6 +41,7 @@ func generateRandomID(prefix string, length int) string {
 }
 
 // GenerateMFASecret generates a new TOTP secret
+// Display in authenticator: "Seaply: email@example.com"
 func GenerateMFASecret(email string, issuer string) (string, string, error) {
 	key, err := totp.Generate(totp.GenerateOpts{
 		Issuer:      issuer,

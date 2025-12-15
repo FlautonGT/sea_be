@@ -1285,8 +1285,10 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 			paymentStatus       string
 			productCode         string
 			productName         string
+			productThumbnail    *string
 			skuCode             string
 			skuName             string
+			skuImage            *string
 			quantity            int
 			buyPrice            int64
 			sellPrice           int64
@@ -1294,10 +1296,12 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 			paymentFee          int64
 			total               int64
 			currency            string
-			paymentCode         string
+			paymentChannelCode  string
 			paymentName         string
+			paymentImage        *string
 			paymentCategoryCode *string
 			providerResponse    *string
+			paymentLogs         []byte // JSONB array
 			accountNickname     *string
 			accountInputs       string
 			email               *string
@@ -1308,6 +1312,13 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 			completedAt         *time.Time
 			expiredAt           time.Time
 			createdAt           time.Time
+			// Payment data from payment_data table
+			pdPaymentCode    *string
+			pdPaymentType    *string
+			pdGatewayRefID   *string
+			pdBankCode       *string
+			pdAccountName    *string
+			pdExpiredAt      *time.Time
 		)
 
 		err := deps.DB.Pool.QueryRow(ctx, `
@@ -1317,8 +1328,10 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 				t.payment_status,
 				p.code,
 				p.title,
+				p.thumbnail,
 				s.code,
 				s.name,
+				s.image,
 				t.quantity,
 				t.buy_price,
 				t.sell_price,
@@ -1328,8 +1341,10 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 				t.currency,
 				pc.code,
 				pc.name,
+				pc.image,
 				pcc.code,
 				t.provider_response,
+				COALESCE(t.payment_logs, '[]'::jsonb),
 				t.account_nickname,
 				t.account_inputs,
 				t.contact_email,
@@ -1339,20 +1354,28 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 				t.processed_at,
 				t.completed_at,
 				t.expired_at,
-				t.created_at
+				t.created_at,
+				pd.payment_code,
+				pd.payment_type,
+				pd.gateway_ref_id,
+				pd.bank_code,
+				pd.account_name,
+				pd.expired_at
 			FROM transactions t
 			JOIN products p ON t.product_id = p.id
 			JOIN skus s ON t.sku_id = s.id
 			JOIN payment_channels pc ON t.payment_channel_id = pc.id
 			LEFT JOIN payment_channel_categories pcc ON pc.category_id = pcc.id
+			LEFT JOIN payment_data pd ON pd.transaction_id = t.id
 			WHERE t.invoice_number = $1
 		`, invoiceNumber).Scan(
-			&id, &status, &paymentStatus, &productCode, &productName,
-			&skuCode, &skuName, &quantity, &buyPrice, &sellPrice,
-			&discount, &paymentFee, &total, &currency, &paymentCode, &paymentName,
-			&paymentCategoryCode, &providerResponse,
+			&id, &status, &paymentStatus, &productCode, &productName, &productThumbnail,
+			&skuCode, &skuName, &skuImage, &quantity, &buyPrice, &sellPrice,
+			&discount, &paymentFee, &total, &currency, &paymentChannelCode, &paymentName, &paymentImage,
+			&paymentCategoryCode, &providerResponse, &paymentLogs,
 			&accountNickname, &accountInputs, &email, &phoneNumber,
 			&serialNumber, &paidAt, &processedAt, &completedAt, &expiredAt, &createdAt,
+			&pdPaymentCode, &pdPaymentType, &pdGatewayRefID, &pdBankCode, &pdAccountName, &pdExpiredAt,
 		)
 
 		if err != nil {
@@ -1383,6 +1406,41 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 			Str("status", status).
 			Str("payment_status", paymentStatus).
 			Msg("Invoice found successfully")
+
+		// Check if transaction is expired and update status if needed
+		now := time.Now()
+		if paymentStatus == "UNPAID" && status == "PENDING" && !expiredAt.IsZero() && (expiredAt.Equal(now) || expiredAt.Before(now)) {
+			// Update transaction status to EXPIRED and FAILED
+			_, updateErr := deps.DB.Pool.Exec(ctx, `
+				UPDATE transactions
+				SET status = 'FAILED'::transaction_status,
+				    payment_status = 'EXPIRED'::payment_status,
+				    updated_at = NOW()
+				WHERE id = $1 AND status = 'PENDING'::transaction_status AND payment_status = 'UNPAID'::payment_status
+			`, id)
+			if updateErr != nil {
+				log.Error().
+					Err(updateErr).
+					Str("endpoint", "/v2/invoices").
+					Str("transaction_id", id).
+					Msg("Failed to update expired transaction status")
+			} else {
+				// Add timeline entry for expiration
+				_, _ = deps.DB.Pool.Exec(ctx, `
+					INSERT INTO transaction_logs (transaction_id, status, message, created_at)
+					VALUES ($1, 'FAILED', 'Payment expired', NOW())
+				`, id)
+
+				// Update local variables for response
+				status = "FAILED"
+				paymentStatus = "EXPIRED"
+				log.Info().
+					Str("endpoint", "/v2/invoices").
+					Str("transaction_id", id).
+					Str("invoice_number", invoiceNumber).
+					Msg("Transaction expired and status updated to FAILED/EXPIRED")
+			}
+		}
 
 		// Fetch timeline entries
 		timelineRows, err := deps.DB.Pool.Query(ctx, `
@@ -1461,8 +1519,13 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 
 		// Build payment object
 		payment := map[string]interface{}{
-			"code": paymentCode,
+			"code": paymentChannelCode,
 			"name": paymentName,
+		}
+
+		// Add payment image if available
+		if paymentImage != nil && *paymentImage != "" {
+			payment["image"] = *paymentImage
 		}
 
 		// Add payment category code if available
@@ -1470,37 +1533,75 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 			payment["categoryCode"] = *paymentCategoryCode
 		}
 
-		// Parse and add payment data from provider_response
-		if providerResponse != nil && *providerResponse != "" {
-			var paymentData map[string]interface{}
-			if err := json.Unmarshal([]byte(*providerResponse), &paymentData); err == nil {
-				// Unified paymentCode (QRIS string, VA number, redirect URL, or retail code)
-				if pCode, ok := paymentData["paymentCode"].(string); ok && pCode != "" {
-					payment["paymentCode"] = pCode
-				}
-				if pType, ok := paymentData["paymentType"].(string); ok && pType != "" {
-					payment["paymentType"] = pType
-				}
+		// Priority 1: Read payment data from payment_data table
+		if pdPaymentCode != nil && *pdPaymentCode != "" {
+			payment["paymentCode"] = *pdPaymentCode
+		}
+		if pdPaymentType != nil && *pdPaymentType != "" {
+			payment["paymentType"] = *pdPaymentType
+		}
+		if pdGatewayRefID != nil && *pdGatewayRefID != "" {
+			payment["gatewayRefId"] = *pdGatewayRefID
+		}
+		if pdBankCode != nil && *pdBankCode != "" {
+			payment["bankCode"] = *pdBankCode
+		}
+		if pdAccountName != nil && *pdAccountName != "" {
+			payment["accountName"] = *pdAccountName
+		}
+		if pdExpiredAt != nil {
+			payment["expiredAt"] = pdExpiredAt.Format(time.RFC3339)
+		}
 
-				// Additional data for specific payment types
-				if bankCode, ok := paymentData["bankCode"].(string); ok && bankCode != "" {
-					payment["bankCode"] = bankCode
+		// Fallback 1: Parse payment data from payment_logs (for older transactions)
+		if _, hasPaymentCode := payment["paymentCode"]; !hasPaymentCode && len(paymentLogs) > 0 {
+			var logs []map[string]interface{}
+			if err := json.Unmarshal(paymentLogs, &logs); err == nil {
+				for _, logEntry := range logs {
+					if logType, ok := logEntry["type"].(string); ok && logType == "PAYMENT_CREATED" {
+						if data, ok := logEntry["data"].(map[string]interface{}); ok {
+							if pCode, ok := data["paymentCode"].(string); ok && pCode != "" {
+								payment["paymentCode"] = pCode
+							}
+							if pType, ok := data["paymentType"].(string); ok && pType != "" {
+								payment["paymentType"] = pType
+							}
+							if bankCode, ok := data["bankCode"].(string); ok && bankCode != "" {
+								payment["bankCode"] = bankCode
+							}
+							if accountName, ok := data["accountName"].(string); ok && accountName != "" {
+								payment["accountName"] = accountName
+							}
+							if gatewayRef, ok := data["gatewayRef"].(string); ok && gatewayRef != "" {
+								payment["gatewayRefId"] = gatewayRef
+							}
+							if paymentExpiredAt, ok := data["expiredAt"].(string); ok && paymentExpiredAt != "" {
+								payment["expiredAt"] = paymentExpiredAt
+							}
+							break
+						}
+					}
 				}
-				if accountName, ok := paymentData["accountName"].(string); ok && accountName != "" {
-					payment["accountName"] = accountName
-				}
-				if deeplink, ok := paymentData["deeplink"].(string); ok && deeplink != "" {
-					payment["deeplink"] = deeplink
-				}
+			}
+		}
 
-				// Instructions
-				if instructions, ok := paymentData["instructions"].([]interface{}); ok && len(instructions) > 0 {
-					payment["instructions"] = instructions
-				}
-
-				// Expiry from payment data
-				if paymentExpiredAt, ok := paymentData["expiredAt"].(string); ok && paymentExpiredAt != "" {
-					payment["expiredAt"] = paymentExpiredAt
+		// Fallback 2: Try to parse payment data from provider_response (legacy)
+		if _, hasPaymentCode := payment["paymentCode"]; !hasPaymentCode {
+			if providerResponse != nil && *providerResponse != "" {
+				var paymentData map[string]interface{}
+				if err := json.Unmarshal([]byte(*providerResponse), &paymentData); err == nil {
+					if pCode, ok := paymentData["paymentCode"].(string); ok && pCode != "" {
+						payment["paymentCode"] = pCode
+					}
+					if pType, ok := paymentData["paymentType"].(string); ok && pType != "" {
+						payment["paymentType"] = pType
+					}
+					if bankCode, ok := paymentData["bankCode"].(string); ok && bankCode != "" {
+						payment["bankCode"] = bankCode
+					}
+					if accountName, ok := paymentData["accountName"].(string); ok && accountName != "" {
+						payment["accountName"] = accountName
+					}
 				}
 			}
 		}
@@ -1514,15 +1615,36 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 			payment["paidAt"] = paidAt.Format(time.RFC3339)
 		}
 
+		// Build product data object
+		productData := map[string]interface{}{
+			"code": productCode,
+			"name": productName,
+		}
+		if productThumbnail != nil && *productThumbnail != "" {
+			productData["image"] = *productThumbnail
+		}
+
+		// Build SKU data object
+		skuData := map[string]interface{}{
+			"code": skuCode,
+			"name": skuName,
+		}
+		if skuImage != nil && *skuImage != "" {
+			skuData["image"] = *skuImage
+		}
+
+		// Build status object
+		statusData := map[string]interface{}{
+			"paymentStatus":     paymentStatus,
+			"transactionStatus": status,
+		}
+
 		// Build response
 		response := map[string]interface{}{
 			"invoiceNumber": invoiceNumber,
-			"status":        status,
-			"paymentStatus": paymentStatus,
-			"productCode":   productCode,
-			"productName":   productName,
-			"skuCode":       skuCode,
-			"skuName":       skuName,
+			"status":        statusData,
+			"product":       productData,
+			"sku":           skuData,
 			"quantity":      quantity,
 			"account":       accountData,
 			"pricing":       pricing,
@@ -1539,6 +1661,352 @@ func handleGetInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 		}
 		if completedAt != nil {
 			response["completedAt"] = completedAt.Format(time.RFC3339)
+		}
+		if paidAt != nil {
+			response["paidAt"] = paidAt.Format(time.RFC3339)
+		}
+
+		utils.WriteSuccessJSON(w, response)
+	}
+}
+
+// handleGetDepositInvoiceImpl implements deposit invoice retrieval
+func handleGetDepositInvoiceImpl(deps *Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Get invoice number from query parameter
+		invoiceNumber := r.URL.Query().Get("invoiceNumber")
+		if invoiceNumber == "" {
+			log.Warn().
+				Str("endpoint", "/v2/deposits/invoices").
+				Str("error_type", "VALIDATION_ERROR").
+				Msg("Invoice number parameter is missing")
+			utils.WriteValidationErrorJSON(w, "Validation failed", map[string]string{
+				"invoiceNumber": "Invoice number parameter is required",
+			})
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		log.Info().
+			Str("endpoint", "/v2/deposits/invoices").
+			Str("invoice_number", invoiceNumber).
+			Msg("Fetching deposit invoice details")
+
+		// Query deposit with related data using joins
+		// Note: Prices in database are stored in rupiah (not cents)
+		var (
+			id                  string
+			status              string
+			amount              int64
+			paymentFee          int64
+			totalAmount         int64
+			currency            string
+			paymentChannelCode  string
+			paymentName         string
+			paymentImage        *string
+			paymentCategoryCode *string
+			paymentInstruction  *string
+			paymentLogs         []byte // JSONB array
+			paidAt              *time.Time
+			expiredAt           *time.Time
+			createdAt           time.Time
+			// Payment data from payment_data table
+			pdPaymentCode    *string
+			pdPaymentType    *string
+			pdGatewayRefID   *string
+			pdBankCode       *string
+			pdAccountName    *string
+			pdExpiredAt      *time.Time
+		)
+
+		err := deps.DB.Pool.QueryRow(ctx, `
+			SELECT
+				d.id,
+				d.status,
+				d.amount,
+				d.payment_fee,
+				d.total_amount,
+				d.currency,
+				pc.code,
+				pc.name,
+				pc.image,
+				pcc.code,
+				pc.instruction,
+				COALESCE(d.payment_logs, '[]'::jsonb),
+				d.paid_at,
+				d.expired_at,
+				d.created_at,
+				pd.payment_code,
+				pd.payment_type,
+				pd.gateway_ref_id,
+				pd.bank_code,
+				pd.account_name,
+				pd.expired_at
+			FROM deposits d
+			JOIN payment_channels pc ON d.payment_channel_id = pc.id
+			LEFT JOIN payment_channel_categories pcc ON pc.category_id = pcc.id
+			LEFT JOIN payment_data pd ON pd.invoice_number = d.invoice_number
+			WHERE d.invoice_number = $1
+		`, invoiceNumber).Scan(
+			&id, &status, &amount, &paymentFee, &totalAmount, &currency,
+			&paymentChannelCode, &paymentName, &paymentImage, &paymentCategoryCode,
+			&paymentInstruction, &paymentLogs,
+			&paidAt, &expiredAt, &createdAt,
+			&pdPaymentCode, &pdPaymentType, &pdGatewayRefID, &pdBankCode, &pdAccountName, &pdExpiredAt,
+		)
+
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				log.Warn().
+					Str("endpoint", "/v2/deposits/invoices").
+					Str("error_type", "INVOICE_NOT_FOUND").
+					Str("invoice_number", invoiceNumber).
+					Msg("Deposit invoice not found in database")
+				utils.WriteErrorJSON(w, http.StatusNotFound, "INVOICE_NOT_FOUND",
+					"Invoice not found", "The deposit invoice number does not exist")
+				return
+			}
+			log.Error().
+				Err(err).
+				Str("endpoint", "/v2/deposits/invoices").
+				Str("error_type", "DB_QUERY_ERROR").
+				Str("invoice_number", invoiceNumber).
+				Msg("Failed to query deposit invoice from database")
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		log.Info().
+			Str("endpoint", "/v2/deposits/invoices").
+			Str("invoice_number", invoiceNumber).
+			Str("deposit_id", id).
+			Str("status", status).
+			Msg("Deposit invoice found successfully")
+
+		// Check if deposit is expired and update status if needed
+		now := time.Now()
+		if status == "PENDING" && expiredAt != nil && (expiredAt.Equal(now) || expiredAt.Before(now)) {
+			// Update deposit status to EXPIRED
+			_, updateErr := deps.DB.Pool.Exec(ctx, `
+				UPDATE deposits
+				SET status = 'EXPIRED'::deposit_status,
+				    updated_at = NOW()
+				WHERE id = $1 AND status = 'PENDING'::deposit_status
+			`, id)
+			if updateErr != nil {
+				log.Error().
+					Err(updateErr).
+					Str("endpoint", "/v2/deposits/invoices").
+					Str("deposit_id", id).
+					Msg("Failed to update expired deposit status")
+			} else {
+				// Add timeline entry for expiration
+				_, _ = deps.DB.Pool.Exec(ctx, `
+					INSERT INTO deposit_logs (deposit_id, status, message, created_at)
+					VALUES ($1, 'EXPIRED', 'Payment expired', NOW())
+				`, id)
+
+				// Update local variable for response
+				status = "EXPIRED"
+				log.Info().
+					Str("endpoint", "/v2/deposits/invoices").
+					Str("deposit_id", id).
+					Str("invoice_number", invoiceNumber).
+					Msg("Deposit expired and status updated to EXPIRED")
+			}
+		}
+
+		// Fetch timeline entries from deposit_logs
+		timelineRows, err := deps.DB.Pool.Query(ctx, `
+			SELECT status, message, created_at
+			FROM deposit_logs
+			WHERE deposit_id = $1
+			ORDER BY created_at ASC
+		`, id)
+		if err != nil {
+			log.Error().
+				Err(err).
+				Str("endpoint", "/v2/deposits/invoices").
+				Str("error_type", "TIMELINE_QUERY_ERROR").
+				Str("deposit_id", id).
+				Msg("Failed to query deposit timeline")
+			// Non-fatal, continue without timeline
+		}
+		defer timelineRows.Close()
+
+		var timeline []map[string]interface{}
+		for timelineRows.Next() {
+			var tlStatus, tlMessage string
+			var tlTimestamp time.Time
+			if err := timelineRows.Scan(&tlStatus, &tlMessage, &tlTimestamp); err != nil {
+				continue
+			}
+			timeline = append(timeline, map[string]interface{}{
+				"status":    tlStatus,
+				"message":   tlMessage,
+				"timestamp": tlTimestamp.Format(time.RFC3339),
+			})
+		}
+
+		if timeline == nil {
+			timeline = []map[string]interface{}{}
+		}
+
+		// Build pricing object (no discount for deposits)
+		// Prices in database are stored in rupiah
+		pricing := map[string]interface{}{
+			"subtotal":   float64(amount),
+			"paymentFee": float64(paymentFee),
+			"total":      float64(totalAmount),
+			"currency":   currency,
+		}
+
+		// Build payment object
+		payment := map[string]interface{}{
+			"code": paymentChannelCode,
+			"name": paymentName,
+		}
+
+		// Add payment image if available
+		if paymentImage != nil && *paymentImage != "" {
+			payment["image"] = *paymentImage
+		}
+
+		// Add payment category code if available
+		if paymentCategoryCode != nil && *paymentCategoryCode != "" {
+			payment["categoryCode"] = *paymentCategoryCode
+		}
+
+		// Add instruction if available
+		if paymentInstruction != nil && *paymentInstruction != "" {
+			payment["instruction"] = *paymentInstruction
+		}
+
+		// Priority 1: Read payment data from payment_data table
+		if pdPaymentCode != nil && *pdPaymentCode != "" {
+			payment["paymentCode"] = *pdPaymentCode
+		}
+		if pdPaymentType != nil && *pdPaymentType != "" {
+			payment["paymentType"] = *pdPaymentType
+		}
+		if pdGatewayRefID != nil && *pdGatewayRefID != "" {
+			payment["gatewayRefId"] = *pdGatewayRefID
+		}
+		if pdBankCode != nil && *pdBankCode != "" {
+			payment["bankCode"] = *pdBankCode
+		}
+		if pdAccountName != nil && *pdAccountName != "" {
+			payment["accountName"] = *pdAccountName
+		}
+		if pdExpiredAt != nil {
+			payment["expiredAt"] = pdExpiredAt.Format(time.RFC3339)
+		}
+
+		// Fallback: Parse payment data from payment_logs (for older deposits)
+		if _, hasPaymentCode := payment["paymentCode"]; !hasPaymentCode && len(paymentLogs) > 0 {
+			var logs []map[string]interface{}
+			if err := json.Unmarshal(paymentLogs, &logs); err == nil {
+				for _, logEntry := range logs {
+					if logType, ok := logEntry["type"].(string); ok && logType == "PAYMENT_CREATED" {
+						if data, ok := logEntry["data"].(map[string]interface{}); ok {
+							if pCode, ok := data["paymentCode"].(string); ok && pCode != "" {
+								payment["paymentCode"] = pCode
+							}
+							if pType, ok := data["paymentType"].(string); ok && pType != "" {
+								payment["paymentType"] = pType
+							}
+							if bankCode, ok := data["bankCode"].(string); ok && bankCode != "" {
+								payment["bankCode"] = bankCode
+							}
+							if accountName, ok := data["accountName"].(string); ok && accountName != "" {
+								payment["accountName"] = accountName
+							}
+							if gatewayRef, ok := data["gatewayRef"].(string); ok && gatewayRef != "" {
+								payment["gatewayRefId"] = gatewayRef
+							}
+							if paymentExpiredAt, ok := data["expiredAt"].(string); ok && paymentExpiredAt != "" {
+								payment["expiredAt"] = paymentExpiredAt
+							}
+							break
+						}
+					}
+				}
+			}
+		}
+
+		// Add expiredAt if not already set from payment data
+		if _, hasExpiry := payment["expiredAt"]; !hasExpiry && expiredAt != nil {
+			payment["expiredAt"] = expiredAt.Format(time.RFC3339)
+		}
+
+		if paidAt != nil {
+			payment["paidAt"] = paidAt.Format(time.RFC3339)
+		}
+
+		// Build status object (same structure as order invoice)
+		statusData := map[string]interface{}{
+			"status": status,
+		}
+
+		// Build payment object - same structure as order invoice (without logs)
+		paymentResponse := map[string]interface{}{
+			"code": payment["code"],
+			"name": payment["name"],
+		}
+
+		// Add payment image if available
+		if paymentImage != nil && *paymentImage != "" {
+			paymentResponse["image"] = *paymentImage
+		}
+
+		// Add payment category code if available
+		if paymentCategoryCode != nil && *paymentCategoryCode != "" {
+			paymentResponse["categoryCode"] = *paymentCategoryCode
+		}
+
+		// Add instruction if available
+		if paymentInstruction != nil && *paymentInstruction != "" {
+			paymentResponse["instruction"] = *paymentInstruction
+		}
+
+		// Add payment data fields
+		if pCode, ok := payment["paymentCode"].(string); ok && pCode != "" {
+			paymentResponse["paymentCode"] = pCode
+		}
+		if pType, ok := payment["paymentType"].(string); ok && pType != "" {
+			paymentResponse["paymentType"] = pType
+		}
+		if gatewayRef, ok := payment["gatewayRefId"].(string); ok && gatewayRef != "" {
+			paymentResponse["gatewayRefId"] = gatewayRef
+		}
+		if bankCode, ok := payment["bankCode"].(string); ok && bankCode != "" {
+			paymentResponse["bankCode"] = bankCode
+		}
+		if accountName, ok := payment["accountName"].(string); ok && accountName != "" {
+			paymentResponse["accountName"] = accountName
+		}
+		if expiredAt != nil {
+			paymentResponse["expiredAt"] = expiredAt.Format(time.RFC3339)
+		}
+		if paidAt != nil {
+			paymentResponse["paidAt"] = paidAt.Format(time.RFC3339)
+		}
+
+		// Build response - similar structure to order invoice
+		response := map[string]interface{}{
+			"invoiceNumber": invoiceNumber,
+			"status":        statusData,
+			"pricing":       pricing,
+			"payment":       paymentResponse,
+			"timeline":      timeline,
+			"createdAt":     createdAt.Format(time.RFC3339),
+		}
+
+		// Add optional fields
+		if expiredAt != nil {
+			response["expiredAt"] = expiredAt.Format(time.RFC3339)
 		}
 		if paidAt != nil {
 			response["paidAt"] = paidAt.Format(time.RFC3339)

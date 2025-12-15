@@ -3,13 +3,17 @@ package provider
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/md5"
+	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // DigiflazzProvider implements the Provider interface for Digiflazz
@@ -19,6 +23,7 @@ type DigiflazzProvider struct {
 	webhookSecret string
 	baseURL       string
 	client        *http.Client
+	isProduction  bool
 }
 
 // NewDigiflazzProvider creates a new Digiflazz provider instance
@@ -36,6 +41,7 @@ func NewDigiflazzProvider(username, apiKey, webhookSecret string, isProduction b
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		isProduction: isProduction,
 	}
 }
 
@@ -59,6 +65,7 @@ type DigiflazzRequest struct {
 	BuyerSKU   string `json:"buyer_sku_code,omitempty"`
 	CustomerNo string `json:"customer_no,omitempty"`
 	Command    string `json:"cmd,omitempty"`
+	Testing    bool   `json:"testing,omitempty"`
 }
 
 // DigiflazzResponse represents a generic Digiflazz API response
@@ -87,18 +94,18 @@ type DigiflazzProduct struct {
 
 // DigiflazzTransaction represents a transaction from Digiflazz
 type DigiflazzTransaction struct {
-	RefID         string  `json:"ref_id"`
-	CustomerNo    string  `json:"customer_no"`
-	BuyerSKUCode  string  `json:"buyer_sku_code"`
-	Message       string  `json:"message"`
-	Status        string  `json:"status"`
-	RC            string  `json:"rc"`
-	SN            string  `json:"sn"`
+	RefID          string  `json:"ref_id"`
+	CustomerNo     string  `json:"customer_no"`
+	BuyerSKUCode   string  `json:"buyer_sku_code"`
+	Message        string  `json:"message"`
+	Status         string  `json:"status"`
+	RC             string  `json:"rc"`
+	SN             string  `json:"sn"`
 	BuyerLastSaldo float64 `json:"buyer_last_saldo"`
-	Price         float64 `json:"price"`
-	SellingPrice  float64 `json:"selling_price"`
-	Tele          string  `json:"tele,omitempty"`
-	Wa            string  `json:"wa,omitempty"`
+	Price          float64 `json:"price"`
+	SellingPrice   float64 `json:"selling_price"`
+	Tele           string  `json:"tele,omitempty"`
+	Wa             string  `json:"wa,omitempty"`
 }
 
 // DigiflazzBalance represents balance info from Digiflazz
@@ -205,12 +212,22 @@ func (d *DigiflazzProvider) CreateOrder(ctx context.Context, req *OrderRequest) 
 		RefID:      req.RefID,
 		BuyerSKU:   req.SKU,
 		CustomerNo: req.CustomerNo,
+		Testing:    !d.isProduction,
 	}
 
 	body, err := json.Marshal(digiReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+
+	// Log the request
+	log.Info().
+		Str("provider", "digiflazz").
+		Str("ref_id", req.RefID).
+		Str("sku", req.SKU).
+		Str("customer_no", req.CustomerNo).
+		Bool("testing", digiReq.Testing).
+		Msg("Sending CreateOrder request to Digiflazz")
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", d.baseURL+"/transaction", bytes.NewBuffer(body))
 	if err != nil {
@@ -229,14 +246,22 @@ func (d *DigiflazzProvider) CreateOrder(ctx context.Context, req *OrderRequest) 
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
+	// Log the raw response
+	log.Info().
+		Str("provider", "digiflazz").
+		Str("ref_id", req.RefID).
+		Str("status_code", resp.Status).
+		Str("response_body", string(respBody)).
+		Msg("Received CreateOrder response from Digiflazz")
+
 	var digiResp DigiflazzResponse
 	if err := json.Unmarshal(respBody, &digiResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal response: %s, body: %s", err, string(respBody))
 	}
 
 	var trx DigiflazzTransaction
 	if err := json.Unmarshal(digiResp.Data, &trx); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal transaction: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal transaction: %w, data: %s", err, string(digiResp.Data))
 	}
 
 	status := d.mapStatus(trx.Status)
@@ -249,9 +274,11 @@ func (d *DigiflazzProvider) CreateOrder(ctx context.Context, req *OrderRequest) 
 		Price:         trx.Price,
 		SellingPrice:  trx.SellingPrice,
 		Status:        status,
-		Message:       trx.Message,
+		Message:       trx.Message + " (RC: " + trx.RC + ")", // Append RC for clearer debugging
 		SN:            trx.SN,
 		CreatedAt:     time.Now(),
+		RawRequest:    body,
+		RawResponse:   respBody,
 	}, nil
 }
 
@@ -377,21 +404,30 @@ func (d *DigiflazzProvider) mapStatus(status string) string {
 }
 
 // ValidateWebhook validates a webhook callback from Digiflazz
-func (d *DigiflazzProvider) ValidateWebhook(data []byte) (*DigiflazzTransaction, error) {
+func (d *DigiflazzProvider) ValidateWebhook(body []byte, signature string) (*DigiflazzTransaction, error) {
+	// Validate signature
+	if d.webhookSecret != "" {
+		if signature == "" {
+			return nil, fmt.Errorf("missing signature")
+		}
+
+		// Calculate HMAC-SHA1
+		mac := hmac.New(sha1.New, []byte(d.webhookSecret))
+		mac.Write(body)
+		expectedSignature := "sha1=" + hex.EncodeToString(mac.Sum(nil))
+
+		if signature != expectedSignature {
+			return nil, fmt.Errorf("invalid signature: expected %s, got %s", expectedSignature, signature)
+		}
+	}
+
 	var callback struct {
 		Data DigiflazzTransaction `json:"data"`
-		Secret string `json:"secret,omitempty"`
 	}
 
-	if err := json.Unmarshal(data, &callback); err != nil {
+	if err := json.Unmarshal(body, &callback); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal webhook: %w", err)
-	}
-
-	// Validate webhook secret if provided
-	if d.webhookSecret != "" && callback.Secret != d.webhookSecret {
-		return nil, fmt.Errorf("invalid webhook secret")
 	}
 
 	return &callback.Data, nil
 }
-

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -78,6 +79,9 @@ type OrderResponse struct {
 	Message       string    `json:"message"`
 	SN            string    `json:"sn"`
 	CreatedAt     time.Time `json:"created_at"`
+	// Raw request/response for logging purposes
+	RawRequest  json.RawMessage `json:"raw_request,omitempty"`
+	RawResponse json.RawMessage `json:"raw_response,omitempty"`
 }
 
 // OrderStatus represents the status of an order

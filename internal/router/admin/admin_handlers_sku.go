@@ -31,50 +31,54 @@ type skuPricingPayload struct {
 }
 
 type skuPayload struct {
-	Code            string                       `json:"code"`
-	ProviderSku     string                       `json:"providerSkuCode"`
-	Name            string                       `json:"name"`
-	Description     string                       `json:"description"`
-	ProductCode     string                       `json:"productCode"`
-	ProviderCode    string                       `json:"providerCode"`
-	SectionCode     string                       `json:"sectionCode"`
-	IsActive        *bool                        `json:"isActive"`
-	IsFeatured      *bool                        `json:"isFeatured"`
-	ProcessTime     *int                         `json:"processTime"`
-	Info            string                       `json:"info"`
-	StockStatus     string                       `json:"stockStatus"`
-	Pricing         map[string]skuPricingPayload `json:"pricing"`
-	Badge           *skuBadgePayload             `json:"badge"`
-	ImageURL        string                       `json:"image"`
-	ExistingPricing map[string]skuPricingPayload `json:"-"`
+	Code               string                       `json:"code"`
+	ProviderSku        string                       `json:"providerSkuCode"`
+	ProviderSkuBackup1 string                       `json:"providerSkuCodeBackup1"`
+	ProviderSkuBackup2 string                       `json:"providerSkuCodeBackup2"`
+	Name               string                       `json:"name"`
+	Description        string                       `json:"description"`
+	ProductCode        string                       `json:"productCode"`
+	ProviderCode       string                       `json:"providerCode"`
+	SectionCode        string                       `json:"sectionCode"`
+	IsActive           *bool                        `json:"isActive"`
+	IsFeatured         *bool                        `json:"isFeatured"`
+	ProcessTime        *int                         `json:"processTime"`
+	Info               string                       `json:"info"`
+	StockStatus        string                       `json:"stockStatus"`
+	Pricing            map[string]skuPricingPayload `json:"pricing"`
+	Badge              *skuBadgePayload             `json:"badge"`
+	ImageURL           string                       `json:"image"`
+	ExistingPricing    map[string]skuPricingPayload `json:"-"`
 }
 
 type skuRecord struct {
-	ID           uuid.UUID
-	Code         string
-	ProviderSku  string
-	Name         string
-	Description  sql.NullString
-	Image        sql.NullString
-	Info         sql.NullString
-	ProductID    uuid.UUID
-	ProductCode  string
-	ProductTitle string
-	ProviderID   uuid.UUID
-	ProviderCode string
-	ProviderName string
-	SectionID    sql.NullString
-	SectionCode  sql.NullString
-	SectionTitle sql.NullString
-	ProcessTime  int
-	IsActive     bool
-	IsFeatured   bool
-	StockStatus  string
-	BadgeText    sql.NullString
-	BadgeColor   sql.NullString
-	TotalSold    int64
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID                 uuid.UUID
+	Code               string
+	ProviderSku        string
+	ProviderSkuBackup1 sql.NullString
+	ProviderSkuBackup2 sql.NullString
+	Name               string
+	Description        sql.NullString
+	Image              sql.NullString
+	Info               sql.NullString
+	ProductID          uuid.UUID
+	ProductCode        string
+	ProductTitle       string
+	ProviderID         uuid.UUID
+	ProviderCode       string
+	ProviderName       string
+	SectionID          sql.NullString
+	SectionCode        sql.NullString
+	SectionTitle       sql.NullString
+	ProcessTime        int
+	IsActive           bool
+	IsFeatured         bool
+	StockStatus        string
+	BadgeText          sql.NullString
+	BadgeColor         sql.NullString
+	TotalSold          int64
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 type skuPricingRecord struct {
@@ -112,7 +116,8 @@ func HandleAdminGetSKUsImpl(deps *Dependencies) http.HandlerFunc {
 
 		baseQuery := `
 			SELECT
-				s.id, s.code, s.provider_sku_code, s.name, s.description, s.image, s.info,
+				s.id, s.code, s.provider_sku_code, s.provider_sku_code_backup1, s.provider_sku_code_backup2,
+				s.name, s.description, s.image, s.info,
 				p.id as product_id, p.code as product_code, p.title,
 				pr.id as provider_id, pr.code as provider_code, pr.name,
 				sc.id as section_id, sc.code as section_code, sc.title,
@@ -179,7 +184,8 @@ func HandleAdminGetSKUsImpl(deps *Dependencies) http.HandlerFunc {
 		for rows.Next() {
 			var rec skuRecord
 			if err := rows.Scan(
-				&rec.ID, &rec.Code, &rec.ProviderSku, &rec.Name, &rec.Description, &rec.Image, &rec.Info,
+				&rec.ID, &rec.Code, &rec.ProviderSku, &rec.ProviderSkuBackup1, &rec.ProviderSkuBackup2,
+				&rec.Name, &rec.Description, &rec.Image, &rec.Info,
 				&rec.ProductID, &rec.ProductCode, &rec.ProductTitle,
 				&rec.ProviderID, &rec.ProviderCode, &rec.ProviderName,
 				&rec.SectionID, &rec.SectionCode, &rec.SectionTitle,
@@ -395,14 +401,16 @@ func HandleCreateSKUImpl(deps *Dependencies) http.HandlerFunc {
 
 		err = tx.QueryRow(ctx, `
 			INSERT INTO skus (
-				code, provider_sku_code, name, description, image, info,
+				code, provider_sku_code, provider_sku_code_backup1, provider_sku_code_backup2,
+				name, description, image, info,
 				product_id, provider_id, section_id,
 				process_time, is_active, is_featured, stock_status,
 				badge_text, badge_color
 			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 			RETURNING id
-		`, payload.Code, payload.ProviderSku, payload.Name, nullString(payload.Description), imageURL, nullString(payload.Info),
+		`, payload.Code, payload.ProviderSku, nullString(payload.ProviderSkuBackup1), nullString(payload.ProviderSkuBackup2),
+			payload.Name, nullString(payload.Description), imageURL, nullString(payload.Info),
 			productID, providerID, nullableUUID(sectionID),
 			processTime, isActive, isFeatured, stockStatus,
 			nullStringFromPtr(payload.Badge, func(b *skuBadgePayload) string { return b.Text }),
@@ -532,6 +540,25 @@ func HandleUpdateSKUImpl(deps *Dependencies) http.HandlerFunc {
 			if newProviderSku != "" {
 				updates = append(updates, fmt.Sprintf("provider_sku_code = $%d", argPos))
 				args = append(args, newProviderSku)
+				argPos++
+			}
+		}
+
+		// Handle backup provider SKU codes
+		if raw, ok := payload["providerSkuCodeBackup1"]; ok {
+			var value string
+			if err := json.Unmarshal(raw, &value); err == nil {
+				updates = append(updates, fmt.Sprintf("provider_sku_code_backup1 = NULLIF($%d, '')", argPos))
+				args = append(args, strings.TrimSpace(value))
+				argPos++
+			}
+		}
+
+		if raw, ok := payload["providerSkuCodeBackup2"]; ok {
+			var value string
+			if err := json.Unmarshal(raw, &value); err == nil {
+				updates = append(updates, fmt.Sprintf("provider_sku_code_backup2 = NULLIF($%d, '')", argPos))
+				args = append(args, strings.TrimSpace(value))
 				argPos++
 			}
 		}
@@ -1076,6 +1103,12 @@ func buildSKUResponse(rec skuRecord, pricing []skuPricingRecord, stats skuStatsR
 		"updatedAt": rec.UpdatedAt.Format(time.RFC3339),
 	}
 
+	if rec.ProviderSkuBackup1.Valid {
+		data["providerSkuCodeBackup1"] = rec.ProviderSkuBackup1.String
+	}
+	if rec.ProviderSkuBackup2.Valid {
+		data["providerSkuCodeBackup2"] = rec.ProviderSkuBackup2.String
+	}
 	if rec.Description.Valid {
 		data["description"] = rec.Description.String
 	}
@@ -1117,7 +1150,8 @@ func loadSKUByIdentifier(ctx context.Context, deps *Dependencies, identifier str
 	var rec skuRecord
 	query := `
 		SELECT
-			s.id, s.code, s.provider_sku_code, s.name, s.description, s.image, s.info,
+			s.id, s.code, s.provider_sku_code, s.provider_sku_code_backup1, s.provider_sku_code_backup2,
+			s.name, s.description, s.image, s.info,
 			p.id as product_id, p.code as product_code, p.title,
 			pr.id as provider_id, pr.code as provider_code, pr.name,
 			sc.id as section_id, sc.code as section_code, sc.title,
@@ -1131,7 +1165,8 @@ func loadSKUByIdentifier(ctx context.Context, deps *Dependencies, identifier str
 		WHERE s.id::text = $1 OR LOWER(s.code) = LOWER($1)
 	`
 	if err := deps.DB.Pool.QueryRow(ctx, query, identifier).Scan(
-		&rec.ID, &rec.Code, &rec.ProviderSku, &rec.Name, &rec.Description, &rec.Image, &rec.Info,
+		&rec.ID, &rec.Code, &rec.ProviderSku, &rec.ProviderSkuBackup1, &rec.ProviderSkuBackup2,
+		&rec.Name, &rec.Description, &rec.Image, &rec.Info,
 		&rec.ProductID, &rec.ProductCode, &rec.ProductTitle,
 		&rec.ProviderID, &rec.ProviderCode, &rec.ProviderName,
 		&rec.SectionID, &rec.SectionCode, &rec.SectionTitle,

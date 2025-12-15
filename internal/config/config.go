@@ -84,6 +84,7 @@ type DigiflazzConfig struct {
 	APIKey        string
 	WebhookSecret string
 	BaseURL       string
+	IsProduction  bool
 }
 
 type VIPResellerConfig struct {
@@ -100,12 +101,13 @@ type BangJeffConfig struct {
 }
 
 type PaymentConfig struct {
-	LinkQu   LinkQuConfig
-	BCA      BCAConfig
-	BRI      BRIConfig
-	Xendit   XenditConfig
-	Midtrans MidtransConfig
-	DANA     DANAConfig
+	LinkQu    LinkQuConfig
+	BCA       BCAConfig
+	BRI       BRIConfig
+	Xendit    XenditConfig
+	Midtrans  MidtransConfig
+	DANA      DANAConfig
+	PakaiLink PakaiLinkConfig
 }
 
 type LinkQuConfig struct {
@@ -165,6 +167,16 @@ type DANAConfig struct {
 	ReturnURL      string
 	DefaultMCC     string
 	Debug          bool
+}
+
+type PakaiLinkConfig struct {
+	ClientKey      string
+	ClientSecret   string
+	PartnerID      string
+	PrivateKeyPath string
+	BaseURL        string
+	CallbackURL    string
+	IsProduction   bool
 }
 
 type AppConfig struct {
@@ -244,6 +256,7 @@ func Load() (*Config, error) {
 				APIKey:        getEnv("DIGIFLAZZ_API_KEY", ""),
 				WebhookSecret: getEnv("DIGIFLAZZ_WEBHOOK_SECRET", ""),
 				BaseURL:       getEnv("DIGIFLAZZ_BASE_URL", "https://api.digiflazz.com/v1"),
+				IsProduction:  getBoolEnv("DIGIFLAZZ_IS_PRODUCTION", false),
 			},
 			VIPReseller: VIPResellerConfig{
 				APIID:   getEnv("VIPRESELLER_API_ID", ""),
@@ -310,6 +323,15 @@ func Load() (*Config, error) {
 				ReturnURL:      getEnv("DANA_RETURN_URL", ""),
 				DefaultMCC:     getEnv("DANA_DEFAULT_MCC", "6012"),
 				Debug:          getBoolEnv("DANA_DEBUG", false),
+			},
+			PakaiLink: PakaiLinkConfig{
+				ClientKey:      getEnv("PAKAILINK_CLIENT_KEY", ""),
+				ClientSecret:   getEnv("PAKAILINK_CLIENT_SECRET", ""),
+				PartnerID:      getEnv("PAKAILINK_PARTNER_ID", ""),
+				PrivateKeyPath: getEnv("PAKAILINK_PRIVATE_KEY_PATH", "./keys/pakailink/rsa_private_key.pem"),
+				BaseURL:        getEnv("PAKAILINK_BASE_URL", "https://api.pakailink.id"),
+				CallbackURL:    getEnv("PAKAILINK_CALLBACK_URL", ""),
+				IsProduction:   getBoolEnv("PAKAILINK_IS_PRODUCTION", false),
 			},
 		},
 		App: AppConfig{

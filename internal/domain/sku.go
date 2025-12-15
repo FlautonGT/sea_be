@@ -15,22 +15,24 @@ const (
 )
 
 type SKU struct {
-	ID              uuid.UUID   `json:"id" db:"id"`
-	Code            string      `json:"code" db:"code"`
-	ProviderSKUCode string      `json:"providerSkuCode" db:"provider_sku_code"`
-	Name            string      `json:"name" db:"name"`
-	Description     *string     `json:"description" db:"description"`
-	ProductID       uuid.UUID   `json:"productId" db:"product_id"`
-	ProviderID      uuid.UUID   `json:"providerId" db:"provider_id"`
-	SectionID       *uuid.UUID  `json:"sectionId" db:"section_id"`
-	Image           *string     `json:"image" db:"image"`
-	Info            *string     `json:"info" db:"info"`
-	ProcessTime     int         `json:"processTime" db:"process_time"` // in minutes
-	IsActive        bool        `json:"isActive" db:"is_active"`
-	IsFeatured      bool        `json:"isFeatured" db:"is_featured"`
-	Stock           StockStatus `json:"stock" db:"stock"`
-	CreatedAt       time.Time   `json:"createdAt" db:"created_at"`
-	UpdatedAt       time.Time   `json:"updatedAt" db:"updated_at"`
+	ID                     uuid.UUID   `json:"id" db:"id"`
+	Code                   string      `json:"code" db:"code"`
+	ProviderSKUCode        string      `json:"providerSkuCode" db:"provider_sku_code"`
+	ProviderSKUCodeBackup1 *string     `json:"providerSkuCodeBackup1" db:"provider_sku_code_backup1"`
+	ProviderSKUCodeBackup2 *string     `json:"providerSkuCodeBackup2" db:"provider_sku_code_backup2"`
+	Name                   string      `json:"name" db:"name"`
+	Description            *string     `json:"description" db:"description"`
+	ProductID              uuid.UUID   `json:"productId" db:"product_id"`
+	ProviderID             uuid.UUID   `json:"providerId" db:"provider_id"`
+	SectionID              *uuid.UUID  `json:"sectionId" db:"section_id"`
+	Image                  *string     `json:"image" db:"image"`
+	Info                   *string     `json:"info" db:"info"`
+	ProcessTime            int         `json:"processTime" db:"process_time"` // in minutes
+	IsActive               bool        `json:"isActive" db:"is_active"`
+	IsFeatured             bool        `json:"isFeatured" db:"is_featured"`
+	Stock                  StockStatus `json:"stock" db:"stock"`
+	CreatedAt              time.Time   `json:"createdAt" db:"created_at"`
+	UpdatedAt              time.Time   `json:"updatedAt" db:"updated_at"`
 }
 
 type SKUPricing struct {
@@ -84,22 +86,24 @@ type BadgeInfo struct {
 
 // Admin Response DTOs
 type AdminSKUResponse struct {
-	ID              string             `json:"id"`
-	Code            string             `json:"code"`
-	ProviderSKUCode string             `json:"providerSkuCode"`
-	Name            string             `json:"name"`
-	Description     *string            `json:"description,omitempty"`
-	Product         ProductInfo        `json:"product"`
-	Provider        ProviderInfo       `json:"provider"`
-	Pricing         map[string]PricingInfo `json:"pricing"`
-	Section         *SectionInfo       `json:"section,omitempty"`
-	IsActive        bool               `json:"isActive"`
-	IsFeatured      bool               `json:"isFeatured"`
-	ProcessTime     int                `json:"processTime"`
-	Stock           StockStatus        `json:"stock"`
-	Stats           *SKUStats          `json:"stats,omitempty"`
-	CreatedAt       time.Time          `json:"createdAt"`
-	UpdatedAt       time.Time          `json:"updatedAt"`
+	ID                     string                 `json:"id"`
+	Code                   string                 `json:"code"`
+	ProviderSKUCode        string                 `json:"providerSkuCode"`
+	ProviderSKUCodeBackup1 *string                `json:"providerSkuCodeBackup1,omitempty"`
+	ProviderSKUCodeBackup2 *string                `json:"providerSkuCodeBackup2,omitempty"`
+	Name                   string                 `json:"name"`
+	Description            *string                `json:"description,omitempty"`
+	Product                ProductInfo            `json:"product"`
+	Provider               ProviderInfo           `json:"provider"`
+	Pricing                map[string]PricingInfo `json:"pricing"`
+	Section                *SectionInfo           `json:"section,omitempty"`
+	IsActive               bool                   `json:"isActive"`
+	IsFeatured             bool                   `json:"isFeatured"`
+	ProcessTime            int                    `json:"processTime"`
+	Stock                  StockStatus            `json:"stock"`
+	Stats                  *SKUStats              `json:"stats,omitempty"`
+	CreatedAt              time.Time              `json:"createdAt"`
+	UpdatedAt              time.Time              `json:"updatedAt"`
 }
 
 type ProductInfo struct {
@@ -117,7 +121,7 @@ type PricingInfo struct {
 	BuyPrice      float64 `json:"buyPrice"`
 	SellPrice     float64 `json:"sellPrice"`
 	OriginalPrice float64 `json:"originalPrice"`
-	Margin        float64 `json:"margin"` // percentage
+	Margin        float64 `json:"margin"`   // percentage
 	Discount      float64 `json:"discount"` // percentage
 }
 
@@ -128,20 +132,22 @@ type SKUStats struct {
 
 // Request DTOs
 type CreateSKURequest struct {
-	Code            string              `json:"code" validate:"required,min=1,max=50"`
-	ProviderSKUCode string              `json:"providerSkuCode" validate:"required"`
-	Name            string              `json:"name" validate:"required,min=1,max=200"`
-	Description     *string             `json:"description"`
-	ProductCode     string              `json:"productCode" validate:"required"`
-	ProviderCode    string              `json:"providerCode" validate:"required"`
-	SectionCode     *string             `json:"sectionCode"`
-	Image           *string             `json:"image"`
-	Info            *string             `json:"info"`
-	ProcessTime     int                 `json:"processTime"`
-	IsActive        bool                `json:"isActive"`
-	IsFeatured      bool                `json:"isFeatured"`
-	Pricing         map[string]PricingRequest `json:"pricing" validate:"required"`
-	Badge           *BadgeRequest       `json:"badge"`
+	Code                   string                    `json:"code" validate:"required,min=1,max=50"`
+	ProviderSKUCode        string                    `json:"providerSkuCode" validate:"required"`
+	ProviderSKUCodeBackup1 *string                   `json:"providerSkuCodeBackup1"`
+	ProviderSKUCodeBackup2 *string                   `json:"providerSkuCodeBackup2"`
+	Name                   string                    `json:"name" validate:"required,min=1,max=200"`
+	Description            *string                   `json:"description"`
+	ProductCode            string                    `json:"productCode" validate:"required"`
+	ProviderCode           string                    `json:"providerCode" validate:"required"`
+	SectionCode            *string                   `json:"sectionCode"`
+	Image                  *string                   `json:"image"`
+	Info                   *string                   `json:"info"`
+	ProcessTime            int                       `json:"processTime"`
+	IsActive               bool                      `json:"isActive"`
+	IsFeatured             bool                      `json:"isFeatured"`
+	Pricing                map[string]PricingRequest `json:"pricing" validate:"required"`
+	Badge                  *BadgeRequest             `json:"badge"`
 }
 
 type PricingRequest struct {
@@ -156,16 +162,18 @@ type BadgeRequest struct {
 }
 
 type UpdateSKURequest struct {
-	Name        *string             `json:"name" validate:"omitempty,min=1,max=200"`
-	Description *string             `json:"description"`
-	SectionCode *string             `json:"sectionCode"`
-	Image       *string             `json:"image"`
-	Info        *string             `json:"info"`
-	ProcessTime *int                `json:"processTime"`
-	IsActive    *bool               `json:"isActive"`
-	IsFeatured  *bool               `json:"isFeatured"`
-	Pricing     map[string]PricingRequest `json:"pricing"`
-	Badge       *BadgeRequest       `json:"badge"`
+	Name                   *string                   `json:"name" validate:"omitempty,min=1,max=200"`
+	Description            *string                   `json:"description"`
+	ProviderSKUCodeBackup1 *string                   `json:"providerSkuCodeBackup1"`
+	ProviderSKUCodeBackup2 *string                   `json:"providerSkuCodeBackup2"`
+	SectionCode            *string                   `json:"sectionCode"`
+	Image                  *string                   `json:"image"`
+	Info                   *string                   `json:"info"`
+	ProcessTime            *int                      `json:"processTime"`
+	IsActive               *bool                     `json:"isActive"`
+	IsFeatured             *bool                     `json:"isFeatured"`
+	Pricing                map[string]PricingRequest `json:"pricing"`
+	Badge                  *BadgeRequest             `json:"badge"`
 }
 
 type BulkUpdatePriceRequest struct {
@@ -173,7 +181,7 @@ type BulkUpdatePriceRequest struct {
 }
 
 type BulkSKUPrice struct {
-	Code    string                     `json:"code" validate:"required"`
+	Code    string                        `json:"code" validate:"required"`
 	Pricing map[string]BulkPricingRequest `json:"pricing" validate:"required"`
 }
 
@@ -190,10 +198,10 @@ type SyncSKURequest struct {
 }
 
 type SyncSKUResponse struct {
-	Status  string       `json:"status"`
-	Summary SyncSummary  `json:"summary"`
-	NewSKUs []NewSKUInfo `json:"newSkus,omitempty"`
-	SyncedAt time.Time   `json:"syncedAt"`
+	Status   string       `json:"status"`
+	Summary  SyncSummary  `json:"summary"`
+	NewSKUs  []NewSKUInfo `json:"newSkus,omitempty"`
+	SyncedAt time.Time    `json:"syncedAt"`
 }
 
 type SyncSummary struct {
@@ -209,4 +217,3 @@ type NewSKUInfo struct {
 	BuyPrice           float64 `json:"buyPrice"`
 	SuggestedSellPrice float64 `json:"suggestedSellPrice"`
 }
-

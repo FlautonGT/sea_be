@@ -28,13 +28,13 @@ func NewEmailService() *EmailService {
 		SMTPPassword: getEnv("SMTP_PASSWORD", ""),
 		FromName:     getEnv("SMTP_FROM_NAME", "Seaply"),
 		FromEmail:    getEnv("SMTP_FROM_EMAIL", "noreply@seaply.co"),
-		AppURL:       getEnv("APP_URL", "http://localhost:3000"),
+		AppURL:       getEnv("APP_FRONTEND_URL", "http://localhost:3000"), // Frontend URL for email links
 	}
 }
 
 // SendVerificationEmail sends email verification link
 func (e *EmailService) SendVerificationEmail(to, firstName, verificationToken string) error {
-	verificationURL := fmt.Sprintf("%s/verify-email/%s", e.AppURL, verificationToken)
+	verificationURL := fmt.Sprintf("%s/verify-email?token=%s&email=%s", e.AppURL, verificationToken, to)
 
 	subject := "Verifikasi Email Anda - Seaply"
 

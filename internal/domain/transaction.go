@@ -10,20 +10,19 @@ type TransactionStatus string
 
 const (
 	TransactionStatusPending    TransactionStatus = "PENDING"
-	TransactionStatusPaid       TransactionStatus = "PAID"
 	TransactionStatusProcessing TransactionStatus = "PROCESSING"
 	TransactionStatusSuccess    TransactionStatus = "SUCCESS"
 	TransactionStatusFailed     TransactionStatus = "FAILED"
-	TransactionStatusRefunded   TransactionStatus = "REFUNDED"
-	TransactionStatusExpired    TransactionStatus = "EXPIRED"
 )
 
 type PaymentStatus string
 
 const (
-	PaymentStatusUnpaid  PaymentStatus = "UNPAID"
-	PaymentStatusPaid    PaymentStatus = "PAID"
-	PaymentStatusExpired PaymentStatus = "EXPIRED"
+	PaymentStatusUnpaid   PaymentStatus = "UNPAID"
+	PaymentStatusPaid     PaymentStatus = "PAID"
+	PaymentStatusFailed   PaymentStatus = "FAILED"
+	PaymentStatusExpired  PaymentStatus = "EXPIRED"
+	PaymentStatusRefunded PaymentStatus = "REFUNDED"
 )
 
 type Transaction struct {
@@ -81,16 +80,16 @@ type TransactionLog struct {
 }
 
 type Refund struct {
-	ID            uuid.UUID      `json:"id" db:"id"`
-	TransactionID uuid.UUID      `json:"transactionId" db:"transaction_id"`
-	Amount        float64        `json:"amount" db:"amount"`
-	Currency      string         `json:"currency" db:"currency"`
-	RefundTo      string         `json:"refundTo" db:"refund_to"` // BALANCE, ORIGINAL_METHOD
-	Status        string         `json:"status" db:"status"` // PROCESSING, SUCCESS, FAILED
-	Reason        string         `json:"reason" db:"reason"`
-	ProcessedBy   uuid.UUID      `json:"processedBy" db:"processed_by"`
-	CreatedAt     time.Time      `json:"createdAt" db:"created_at"`
-	CompletedAt   *time.Time     `json:"completedAt" db:"completed_at"`
+	ID            uuid.UUID  `json:"id" db:"id"`
+	TransactionID uuid.UUID  `json:"transactionId" db:"transaction_id"`
+	Amount        float64    `json:"amount" db:"amount"`
+	Currency      string     `json:"currency" db:"currency"`
+	RefundTo      string     `json:"refundTo" db:"refund_to"` // BALANCE, ORIGINAL_METHOD
+	Status        string     `json:"status" db:"status"`      // PROCESSING, SUCCESS, FAILED
+	Reason        string     `json:"reason" db:"reason"`
+	ProcessedBy   uuid.UUID  `json:"processedBy" db:"processed_by"`
+	CreatedAt     time.Time  `json:"createdAt" db:"created_at"`
+	CompletedAt   *time.Time `json:"completedAt" db:"completed_at"`
 }
 
 // Response DTOs
@@ -127,22 +126,22 @@ type PricingResponse struct {
 }
 
 type PaymentInfo struct {
-	Code        string     `json:"code"`
-	Name        string     `json:"name"`
-	Instruction *string    `json:"instruction,omitempty"`
+	Code        string  `json:"code"`
+	Name        string  `json:"name"`
+	Instruction *string `json:"instruction,omitempty"`
 	// For QRIS
-	QRCode      *string    `json:"qrCode,omitempty"`
-	QRCodeImage *string    `json:"qrCodeImage,omitempty"`
+	QRCode      *string `json:"qrCode,omitempty"`
+	QRCodeImage *string `json:"qrCodeImage,omitempty"`
 	// For Virtual Account
-	AccountNumber *string  `json:"accountNumber,omitempty"`
-	BankName      *string  `json:"bankName,omitempty"`
-	AccountName   *string  `json:"accountName,omitempty"`
+	AccountNumber *string `json:"accountNumber,omitempty"`
+	BankName      *string `json:"bankName,omitempty"`
+	AccountName   *string `json:"accountName,omitempty"`
 	// For E-Wallet redirect
-	RedirectURL   *string  `json:"redirectUrl,omitempty"`
-	Deeplink      *string  `json:"deeplink,omitempty"`
+	RedirectURL *string `json:"redirectUrl,omitempty"`
+	Deeplink    *string `json:"deeplink,omitempty"`
 	// Common
-	PaidAt        *time.Time `json:"paidAt,omitempty"`
-	ExpiredAt     *time.Time `json:"expiredAt,omitempty"`
+	PaidAt    *time.Time `json:"paidAt,omitempty"`
+	ExpiredAt *time.Time `json:"expiredAt,omitempty"`
 }
 
 type PromoInfo struct {
@@ -162,23 +161,23 @@ type TimelineItem struct {
 }
 
 type AdminTransactionResponse struct {
-	ID              string            `json:"id"`
-	InvoiceNumber   string            `json:"invoiceNumber"`
-	Status          TransactionStatus `json:"status"`
-	PaymentStatus   PaymentStatus     `json:"paymentStatus"`
-	Product         ProductInfo       `json:"product"`
-	SKU             SKUInfo           `json:"sku"`
-	Provider        ProviderTrxInfo   `json:"provider"`
-	Account         AccountInfo       `json:"account"`
-	User            *UserTrxInfo      `json:"user,omitempty"`
-	Pricing         AdminPricingInfo  `json:"pricing"`
-	Payment         AdminPaymentInfo  `json:"payment"`
-	Promo           *PromoInfo        `json:"promo,omitempty"`
-	Region          string            `json:"region"`
-	IPAddress       string            `json:"ipAddress"`
-	UserAgent       string            `json:"userAgent"`
-	CreatedAt       time.Time         `json:"createdAt"`
-	CompletedAt     *time.Time        `json:"completedAt,omitempty"`
+	ID            string            `json:"id"`
+	InvoiceNumber string            `json:"invoiceNumber"`
+	Status        TransactionStatus `json:"status"`
+	PaymentStatus PaymentStatus     `json:"paymentStatus"`
+	Product       ProductInfo       `json:"product"`
+	SKU           SKUInfo           `json:"sku"`
+	Provider      ProviderTrxInfo   `json:"provider"`
+	Account       AccountInfo       `json:"account"`
+	User          *UserTrxInfo      `json:"user,omitempty"`
+	Pricing       AdminPricingInfo  `json:"pricing"`
+	Payment       AdminPaymentInfo  `json:"payment"`
+	Promo         *PromoInfo        `json:"promo,omitempty"`
+	Region        string            `json:"region"`
+	IPAddress     string            `json:"ipAddress"`
+	UserAgent     string            `json:"userAgent"`
+	CreatedAt     time.Time         `json:"createdAt"`
+	CompletedAt   *time.Time        `json:"completedAt,omitempty"`
 }
 
 type SKUInfo struct {
@@ -187,15 +186,15 @@ type SKUInfo struct {
 }
 
 type ProviderTrxInfo struct {
-	Code   string  `json:"code"`
-	Name   string  `json:"name"`
-	RefID  *string `json:"refId,omitempty"`
+	Code  string  `json:"code"`
+	Name  string  `json:"name"`
+	RefID *string `json:"refId,omitempty"`
 }
 
 type UserTrxInfo struct {
-	ID    string  `json:"id"`
-	Name  string  `json:"name"`
-	Email string  `json:"email"`
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
 }
 
 type AdminPricingInfo struct {
@@ -218,7 +217,7 @@ type AdminPaymentInfo struct {
 
 type TransactionDetailResponse struct {
 	AdminTransactionResponse
-	Timeline []TimelineItem   `json:"timeline"`
+	Timeline []TimelineItem       `json:"timeline"`
 	Logs     []TransactionLogInfo `json:"logs,omitempty"`
 }
 
@@ -239,16 +238,16 @@ type TransactionOverview struct {
 }
 
 type RefundResponse struct {
-	RefundID      string     `json:"refundId"`
-	TransactionID string     `json:"transactionId"`
-	InvoiceNumber string     `json:"invoiceNumber"`
-	Amount        float64    `json:"amount"`
-	Currency      string     `json:"currency"`
-	RefundTo      string     `json:"refundTo"`
-	Status        string     `json:"status"`
-	Reason        string     `json:"reason"`
-	ProcessedBy   CreatedBy  `json:"processedBy"`
-	CreatedAt     time.Time  `json:"createdAt"`
+	RefundID      string    `json:"refundId"`
+	TransactionID string    `json:"transactionId"`
+	InvoiceNumber string    `json:"invoiceNumber"`
+	Amount        float64   `json:"amount"`
+	Currency      string    `json:"currency"`
+	RefundTo      string    `json:"refundTo"`
+	Status        string    `json:"status"`
+	Reason        string    `json:"reason"`
+	ProcessedBy   CreatedBy `json:"processedBy"`
+	CreatedAt     time.Time `json:"createdAt"`
 }
 
 // Request DTOs
@@ -284,19 +283,19 @@ type OrderInquiryRequest struct {
 }
 
 type OrderInquiryResponse struct {
-	ValidationToken string           `json:"validationToken"`
-	ExpiresAt       time.Time        `json:"expiresAt"`
-	Order           OrderPreview     `json:"order"`
+	ValidationToken string       `json:"validationToken"`
+	ExpiresAt       time.Time    `json:"expiresAt"`
+	Order           OrderPreview `json:"order"`
 }
 
 type OrderPreview struct {
-	Product  ProductBasic     `json:"product"`
-	SKU      SKUBasic         `json:"sku"`
-	Account  AccountData      `json:"account"`
-	Payment  PaymentBasic     `json:"payment"`
-	Pricing  PricingResponse  `json:"pricing"`
-	Promo    *PromoInfo       `json:"promo,omitempty"`
-	Contact  *ContactInfo     `json:"contact,omitempty"`
+	Product ProductBasic    `json:"product"`
+	SKU     SKUBasic        `json:"sku"`
+	Account AccountData     `json:"account"`
+	Payment PaymentBasic    `json:"payment"`
+	Pricing PricingResponse `json:"pricing"`
+	Promo   *PromoInfo      `json:"promo,omitempty"`
+	Contact *ContactInfo    `json:"contact,omitempty"`
 }
 
 type SKUBasic struct {
@@ -341,4 +340,3 @@ type ManualProcessRequest struct {
 	SerialNumber string `json:"serialNumber" validate:"required"`
 	Reason       string `json:"reason" validate:"required"`
 }
-

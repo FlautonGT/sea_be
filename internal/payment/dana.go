@@ -109,17 +109,43 @@ func (d *DANAGateway) CreatePayment(ctx context.Context, req *PaymentRequest) (*
 
 func (d *DANAGateway) createRedirectPayment(ctx context.Context, req *PaymentRequest) (*PaymentResponse, error) {
 	money := d.buildMoney(req.Amount, req.Currency)
-	urlParams := d.buildURLParams(req)
-	request := payment_gateway.NewCreateOrderByRedirectRequest(req.RefID, d.cfg.MerchantID, *money, urlParams)
-	request.SetValidUpTo(d.formatWIB(d.expiryTime(req.ExpiryDuration)))
+	urlParams := d.buildURLParamsHosted(req)
 
-	additional := d.buildRedirectAdditionalInfo(req)
-	request.SetAdditionalInfo(additional)
+	// Use BALANCE pay option for DANA wallet payment (similar to QRIS but with BALANCE)
+	payDetail := payment_gateway.NewPayOptionDetail(
+		string(payment_gateway.PAYMETHOD_BALANCE_),
+		"BALANCE", // PayOption BALANCE (no constant in SDK)
+		*money,
+	)
 
-	apiRequest := payment_gateway.CreateOrderByRedirectRequestAsCreateOrderRequest(request)
-	resp, _, err := d.client.PaymentGatewayAPI.CreateOrder(ctx).CreateOrderRequest(apiRequest).Execute()
+	apiReq := payment_gateway.NewCreateOrderByApiRequest([]payment_gateway.PayOptionDetail{}, req.RefID, d.cfg.MerchantID, *money, urlParams)
+	apiReq.SetPayOptionDetails([]payment_gateway.PayOptionDetail{*payDetail})
+	apiReq.SetValidUpTo(d.formatWIB(d.expiryTime(req.ExpiryDuration)))
+
+	// Use ShopId from config, fallback to MerchantID if not set
+	externalStoreId := d.cfg.ShopId
+	if externalStoreId == "" {
+		externalStoreId = d.cfg.MerchantID
+	}
+	apiReq.SetExternalStoreId(externalStoreId)
+
+	additional := d.buildAPIAdditionalInfo(req)
+	apiReq.SetAdditionalInfo(additional)
+
+	request := payment_gateway.CreateOrderByApiRequestAsCreateOrderRequest(apiReq)
+	resp, httpResp, err := d.client.PaymentGatewayAPI.CreateOrder(ctx).CreateOrderRequest(request).Execute()
 	if err != nil {
 		return nil, err
+	}
+
+	// Debug logging
+	if d.cfg.Debug {
+		fmt.Printf("[DANA BALANCE] Response Code: %s, Message: %s\n", resp.GetResponseCode(), resp.GetResponseMessage())
+		fmt.Printf("[DANA BALANCE] Reference No: %s\n", resp.GetReferenceNo())
+		fmt.Printf("[DANA BALANCE] Web Redirect URL: %s\n", resp.GetWebRedirectUrl())
+		if httpResp != nil {
+			fmt.Printf("[DANA BALANCE] HTTP Status: %s\n", httpResp.Status)
+		}
 	}
 
 	if err := d.ensureSuccess(resp.GetResponseCode(), resp.GetResponseMessage()); err != nil {
@@ -330,7 +356,7 @@ func (d *DANAGateway) buildRedirectAdditionalInfo(req *PaymentRequest) payment_g
 		string(payment_gateway.TERMINALTYPE_WEB_),
 	)
 	order := payment_gateway.NewOrderRedirectObject(d.orderTitle(req))
-	order.SetScenario("REDIRECT")
+	order.SetScenario("API")
 
 	info := payment_gateway.NewCreateOrderByRedirectAdditionalInfo(d.cfg.DefaultMCC, *env)
 	info.SetOrder(*order)
@@ -436,7 +462,10 @@ func (d *DANAGateway) parseWIB(value string) time.Time {
 }
 
 func (d *DANAGateway) ensureSuccess(code, message string) error {
-	if code == "0000" || strings.EqualFold(message, "SUCCESS") {
+	// DANA V2 API success codes:
+	// - 2005400: Success code seen in CreateOrder response
+	// - Successful: Message text variations
+	if code == "2005400" || strings.EqualFold(message, "Successful") {
 		return nil
 	}
 	return fmt.Errorf("dana error %s: %s", code, message)

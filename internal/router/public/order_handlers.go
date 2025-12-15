@@ -13,11 +13,37 @@ import (
 
 	"seaply/internal/middleware"
 	"seaply/internal/payment"
+	"seaply/internal/provider"
 	"seaply/internal/utils"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
+
+// createLogEntry creates a JSON log entry with timestamp, type, and full raw data
+// Types for payment: PAYMENT_CREATED, PAYMENT_CALLBACK
+// Types for provider: ORDER_REQUEST, ORDER_RESPONSE, ORDER_FAILED, PROVIDER_CALLBACK, RETRY_REQUEST, RETRY_RESPONSE, RETRY_FAILED
+func createLogEntry(eventType string, data interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"timestamp": time.Now().Format(time.RFC3339),
+		"type":      eventType,
+		"data":      data,
+	}
+}
+
+// formatLogEntry creates a timestamped log entry (legacy, kept for compatibility)
+func formatLogEntry(message string) string {
+	return time.Now().Format("2006-01-02 15:04:05") + ": " + message + "\n"
+}
+
+// mustMarshalJSON marshals data to JSON string, returns empty array on error
+func mustMarshalJSON(data interface{}) string {
+	b, err := json.Marshal(data)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
 
 // OrderInquiryRequest represents the request body for order inquiry
 type OrderInquiryRequest struct {
@@ -375,37 +401,59 @@ func HandleOrderInquiryImpl(deps *Dependencies) http.HandlerFunc {
 			}
 
 			// Check if promo is applicable to this product
+			// If promo_products is empty/null, promo can be used for all products
+			// If promo_products has entries, product must be in the list
+			var totalProductCount int
 			var productCount int
 			err = deps.DB.Pool.QueryRow(ctx, `
-				SELECT COUNT(*)
-				FROM promo_products pp
-				JOIN products p ON pp.product_id = p.id
-				WHERE pp.promo_id = $1 AND p.code = $2
-			`, promoID, req.ProductCode).Scan(&productCount)
+				SELECT COUNT(*) FROM promo_products WHERE promo_id = $1
+			`, promoID).Scan(&totalProductCount)
 
-			if err != nil || productCount == 0 {
-				utils.WriteValidationErrorJSON(w, "Validation failed", map[string]string{
-					"promoCode": "Promo code is not applicable to this product",
-				})
-				return
-			}
-
-			// Check if promo is applicable to payment channel (if payment code provided)
-			if req.PaymentCode != "" {
-				var channelCount int
+			if err == nil && totalProductCount > 0 {
+				// Promo has specific products, check if this product is allowed
 				err = deps.DB.Pool.QueryRow(ctx, `
 					SELECT COUNT(*)
-					FROM promo_payment_channels ppc
-					JOIN payment_channels pc ON ppc.channel_id = pc.id
-					WHERE ppc.promo_id = $1 AND pc.code = $2
-				`, promoID, req.PaymentCode).Scan(&channelCount)
+					FROM promo_products pp
+					JOIN products p ON pp.product_id = p.id
+					WHERE pp.promo_id = $1 AND p.code = $2
+				`, promoID, req.ProductCode).Scan(&productCount)
 
-				if err != nil || channelCount == 0 {
+				if err != nil || productCount == 0 {
 					utils.WriteValidationErrorJSON(w, "Validation failed", map[string]string{
-						"promoCode": "Promo code is not applicable to this payment method",
+						"promoCode": "Promo code is not applicable to this product",
 					})
 					return
 				}
+			}
+			// If totalProductCount == 0, promo can be used for all products (skip validation)
+
+			// Check if promo is applicable to payment channel (if payment code provided)
+			// If promo_payment_channels is empty/null, promo can be used for all payment methods
+			// If promo_payment_channels has entries, payment must be in the list
+			if req.PaymentCode != "" {
+				var totalChannelCount int
+				var channelCount int
+				err = deps.DB.Pool.QueryRow(ctx, `
+					SELECT COUNT(*) FROM promo_payment_channels WHERE promo_id = $1
+				`, promoID).Scan(&totalChannelCount)
+
+				if err == nil && totalChannelCount > 0 {
+					// Promo has specific payment channels, check if this payment is allowed
+					err = deps.DB.Pool.QueryRow(ctx, `
+						SELECT COUNT(*)
+						FROM promo_payment_channels ppc
+						JOIN payment_channels pc ON ppc.channel_id = pc.id
+						WHERE ppc.promo_id = $1 AND pc.code = $2
+					`, promoID, req.PaymentCode).Scan(&channelCount)
+
+					if err != nil || channelCount == 0 {
+						utils.WriteValidationErrorJSON(w, "Validation failed", map[string]string{
+							"promoCode": "Promo code is not applicable to this payment method",
+						})
+						return
+					}
+				}
+				// If totalChannelCount == 0, promo can be used for all payment methods (skip validation)
 			}
 
 			// Calculate discount (all in rupiah)
@@ -670,12 +718,13 @@ func HandleCreateOrderImpl(deps *Dependencies) http.HandlerFunc {
 		// Fetch product details (check region availability)
 		var productID string
 		var productName, productSlug string
+		var productThumbnail *string
 		err = tx.QueryRow(ctx, `
-			SELECT p.id, p.title, p.slug
+			SELECT p.id, p.title, p.slug, p.thumbnail
 			FROM products p
 			JOIN product_regions pr ON p.id = pr.product_id
 			WHERE p.code = $1 AND p.is_active = true AND pr.region_code = $2
-		`, productCode, region).Scan(&productID, &productName, &productSlug)
+		`, productCode, region).Scan(&productID, &productName, &productSlug, &productThumbnail)
 
 		if err != nil {
 			log.Error().
@@ -702,13 +751,14 @@ func HandleCreateOrderImpl(deps *Dependencies) http.HandlerFunc {
 		// Fetch SKU details with pricing and provider
 		var skuID, skuName, providerID string
 		var buyPrice, sellPrice int64
+		var skuImage *string
 		err = tx.QueryRow(ctx, `
-			SELECT s.id, s.name, s.provider_id, sp.buy_price, sp.sell_price
+			SELECT s.id, s.name, s.provider_id, sp.buy_price, sp.sell_price, s.image
 			FROM skus s
 			JOIN sku_pricing sp ON s.id = sp.sku_id
 			WHERE s.code = $1 AND s.product_id = $2 AND s.is_active = true AND sp.is_active = true
 			LIMIT 1
-		`, skuCode, productID).Scan(&skuID, &skuName, &providerID, &buyPrice, &sellPrice)
+		`, skuCode, productID).Scan(&skuID, &skuName, &providerID, &buyPrice, &sellPrice, &skuImage)
 
 		if err != nil {
 			log.Error().
@@ -741,14 +791,17 @@ func HandleCreateOrderImpl(deps *Dependencies) http.HandlerFunc {
 		var paymentChannelID string
 		var paymentCategoryID *string // nullable
 		var paymentName, paymentInstruction string
+		var paymentImage *string
+		var paymentCategoryCode *string
 		var feeAmount, feePercentage float64
 		err = tx.QueryRow(ctx, `
-			SELECT pc.id, pc.name, pc.category_id, pc.instruction, pc.fee_amount, pc.fee_percentage
+			SELECT pc.id, pc.name, pc.category_id, pc.instruction, pc.image, pc.fee_amount, pc.fee_percentage, pcc.code
 			FROM payment_channels pc
+			LEFT JOIN payment_channel_categories pcc ON pc.category_id = pcc.id
 			WHERE pc.code = $1 AND pc.is_active = true
 			LIMIT 1
 		`, paymentCode).Scan(&paymentChannelID, &paymentName, &paymentCategoryID,
-			&paymentInstruction, &feeAmount, &feePercentage)
+			&paymentInstruction, &paymentImage, &feeAmount, &feePercentage, &paymentCategoryCode)
 
 		if err != nil {
 			log.Error().
@@ -818,10 +871,8 @@ func HandleCreateOrderImpl(deps *Dependencies) http.HandlerFunc {
 
 		// Get user ID from auth context if authenticated
 		var userID *string
-		if authUserID := r.Context().Value("userID"); authUserID != nil {
-			if uid, ok := authUserID.(string); ok {
-				userID = &uid
-			}
+		if authUserID := middleware.GetUserIDFromContext(r.Context()); authUserID != "" {
+			userID = &authUserID
 		}
 
 		// For BALANCE payment, check user balance
@@ -979,7 +1030,7 @@ func HandleCreateOrderImpl(deps *Dependencies) http.HandlerFunc {
 		_, err = tx.Exec(ctx, `
 			INSERT INTO transaction_logs (transaction_id, status, message, created_at)
 			VALUES ($1, $2, $3, NOW())
-		`, transactionID, "PENDING", "Order created, waiting for payment")
+		`, transactionID, "PENDING", "Order successfully created, waiting for payment.")
 
 		if err != nil {
 			log.Warn().
@@ -998,6 +1049,21 @@ func HandleCreateOrderImpl(deps *Dependencies) http.HandlerFunc {
 		transactionStatus := "PENDING"
 
 		if paymentCode == "BALANCE" {
+			// Get balance before deduction for mutation
+			var balanceBefore int64
+			err = tx.QueryRow(ctx, `SELECT balance_idr FROM users WHERE id = $1`, *userID).Scan(&balanceBefore)
+			if err != nil {
+				log.Error().
+					Err(err).
+					Str("endpoint", "/v2/orders").
+					Str("error_type", "BALANCE_CHECK_ERROR").
+					Str("transaction_id", transactionID).
+					Str("user_id", *userID).
+					Msg("Failed to get user balance before deduction")
+				utils.WriteInternalServerError(w)
+				return
+			}
+
 			// For balance payment, deduct immediately
 			_, err = tx.Exec(ctx, `
 				UPDATE users
@@ -1020,14 +1086,17 @@ func HandleCreateOrderImpl(deps *Dependencies) http.HandlerFunc {
 				return
 			}
 
-			// Update transaction to PAID
+			// Calculate balance after
+			balanceAfter := balanceBefore - totalAmount
+
+			// Update transaction: payment_status = PAID, transaction_status = PROCESSING (will process to provider)
 			paymentStatus = "PAID"
-			transactionStatus = "PAID"
+			transactionStatus = "PROCESSING"
 			paidAt := time.Now()
 
 			_, err = tx.Exec(ctx, `
 				UPDATE transactions
-				SET payment_status = $1, status = $2, paid_at = $3, updated_at = NOW()
+				SET payment_status = $1::payment_status, status = $2::transaction_status, paid_at = $3, updated_at = NOW()
 				WHERE id = $4
 			`, paymentStatus, transactionStatus, paidAt, transactionID)
 
@@ -1037,21 +1106,254 @@ func HandleCreateOrderImpl(deps *Dependencies) http.HandlerFunc {
 					Str("endpoint", "/v2/orders").
 					Str("error_type", "TRANSACTION_UPDATE_ERROR").
 					Str("transaction_id", transactionID).
-					Msg("Failed to update transaction status to PAID")
+					Msg("Failed to update transaction status to PROCESSING")
 				utils.WriteInternalServerError(w)
 				return
 			}
 
-			// Add timeline entry for payment
-			_, err = tx.Exec(ctx, `
+			// Add timeline entry for payment received
+			_, _ = tx.Exec(ctx, `
 				INSERT INTO transaction_logs (transaction_id, status, message, created_at)
 				VALUES ($1, $2, $3, NOW())
-			`, transactionID, "PAID", "Payment completed using balance")
+			`, transactionID, "PAYMENT", fmt.Sprintf("Payment received via %s.", paymentName))
+
+			// Create DEBIT mutation record for purchase
+			mutationDesc := fmt.Sprintf("Pembelian %s - %s", productName, skuName)
+			_, _ = tx.Exec(ctx, `
+				INSERT INTO mutations (
+					user_id, invoice_number, reference_type, reference_id,
+					description, mutation_type, amount,
+					balance_before, balance_after, currency, created_at
+				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+			`, *userID, invoiceNumber, "TRANSACTION", transactionID,
+				mutationDesc, "DEBIT", totalAmount,
+				balanceBefore, balanceAfter, currency)
+
+			// Add payment log for balance payment
+			paymentLogEntry := createLogEntry("PAYMENT_CREATED", map[string]interface{}{
+				"method":  "BALANCE",
+				"amount":  totalAmount,
+				"status":  "SUCCESS",
+				"message": "Payment completed via balance",
+			})
+			paymentLogJSON, _ := json.Marshal([]interface{}{paymentLogEntry})
+			_, _ = tx.Exec(ctx, `
+				UPDATE transactions
+				SET payment_logs = $1::jsonb, updated_at = NOW()
+				WHERE id = $2
+			`, string(paymentLogJSON), transactionID)
+
+			// Insert into payment_data table for balance payment
+			rawReqJSON, _ := json.Marshal(map[string]interface{}{
+				"method": "BALANCE",
+				"amount": totalAmount,
+				"userID": *userID,
+			})
+			rawRespJSON, _ := json.Marshal(map[string]interface{}{
+				"status":  "SUCCESS",
+				"message": "Balance deducted successfully",
+			})
+			_, _ = tx.Exec(ctx, `
+				INSERT INTO payment_data (
+					transaction_id, payment_channel_id, invoice_number,
+					payment_code, payment_type, gateway_ref_id,
+					amount, fee, total_amount, currency,
+					status, paid_at, expired_at,
+					raw_request, raw_response,
+					created_at, updated_at
+				) VALUES (
+					$1, $2, $3,
+					'BALANCE', 'BALANCE', NULL,
+					$4, 0, $4, $5,
+					'PAID', $6, $7,
+					$8, $9,
+					NOW(), NOW()
+				)
+			`, transactionID, paymentChannelID, invoiceNumber,
+				totalAmount, currency,
+				paidAt, expiredAt,
+				rawReqJSON, rawRespJSON)
 
 			paymentData = map[string]interface{}{
 				"method": "BALANCE",
 				"paidAt": paidAt,
 			}
+
+			// For balance payment, process to provider immediately (after commit)
+			// Store the needed data for provider processing
+			// Build customer_no: userId + zoneId/serverId (if exists)
+			customerNo := userId
+			if zoneId != "" {
+				customerNo = userId + zoneId
+			}
+			balanceProviderData := map[string]string{
+				"transactionID": transactionID,
+				"invoiceNumber": invoiceNumber,
+				"skuCode":       skuCode,
+				"providerID":    providerID,
+				"customerNo":    customerNo,
+				"productName":   productName,
+				"skuName":       skuName,
+			}
+			defer func() {
+				if deps.ProviderManager == nil {
+					return
+				}
+
+				// Get provider code
+				var pCode string
+				err := deps.DB.Pool.QueryRow(context.Background(), `
+					SELECT code FROM providers WHERE id = $1
+				`, balanceProviderData["providerID"]).Scan(&pCode)
+				if err != nil {
+					return
+				}
+
+				prov, err := deps.ProviderManager.Get(strings.ToLower(pCode))
+				if err != nil {
+					return
+				}
+
+				// Get provider SKU code
+				var providerSKUCode string
+				err = deps.DB.Pool.QueryRow(context.Background(), `
+					SELECT provider_sku_code FROM skus WHERE code = $1
+				`, balanceProviderData["skuCode"]).Scan(&providerSKUCode)
+				if err != nil || providerSKUCode == "" {
+					providerSKUCode = balanceProviderData["skuCode"]
+				}
+
+				// Process to provider asynchronously
+				go func() {
+					provCtx, provCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer provCancel()
+
+					txID := balanceProviderData["transactionID"]
+					invNum := balanceProviderData["invoiceNumber"]
+					custNo := balanceProviderData["customerNo"]
+					prodName := balanceProviderData["productName"]
+					skuName := balanceProviderData["skuName"]
+
+					log.Info().
+						Str("invoice_number", invNum).
+						Str("provider", pCode).
+						Str("sku", providerSKUCode).
+						Str("customer_no", custNo).
+						Msg("Processing balance transaction to provider")
+
+					// Add timeline entry: Processing order
+					_, _ = deps.DB.Pool.Exec(provCtx, `
+						INSERT INTO transaction_logs (transaction_id, status, message, created_at)
+						VALUES ($1, 'PROCESSING', $2, NOW())
+					`, txID, fmt.Sprintf("Processing order %s %s", prodName, skuName))
+
+					orderReq := &provider.OrderRequest{
+						RefID:      invNum,
+						SKU:        providerSKUCode,
+						CustomerNo: custNo,
+					}
+
+					orderResp, err := prov.CreateOrder(provCtx, orderReq)
+
+					// Log the raw request from provider response
+					if orderResp != nil && len(orderResp.RawRequest) > 0 {
+						var rawReqData interface{}
+						json.Unmarshal(orderResp.RawRequest, &rawReqData)
+						providerReqLog := createLogEntry("ORDER_REQUEST", rawReqData)
+						providerReqJSON, _ := json.Marshal([]interface{}{providerReqLog})
+						_, _ = deps.DB.Pool.Exec(provCtx, `
+							UPDATE transactions
+							SET provider_logs = COALESCE(provider_logs, '[]'::jsonb) || $1::jsonb, updated_at = NOW()
+							WHERE id = $2
+						`, string(providerReqJSON), txID)
+					}
+					if err != nil {
+						log.Error().Err(err).
+							Str("invoice_number", invNum).
+							Str("provider", pCode).
+							Msg("Failed to process balance transaction to provider")
+
+						providerFailLog := createLogEntry("ORDER_FAILED", map[string]interface{}{
+							"error": err.Error(),
+						})
+						_, _ = deps.DB.Pool.Exec(context.Background(), `
+							UPDATE transactions
+							SET status = 'FAILED',
+							    provider_logs = COALESCE(provider_logs, '[]'::jsonb) || $1::jsonb,
+							    updated_at = NOW()
+							WHERE id = $2
+						`, mustMarshalJSON([]interface{}{providerFailLog}), txID)
+
+						_, _ = deps.DB.Pool.Exec(context.Background(), `
+							INSERT INTO transaction_logs (transaction_id, status, message, created_at)
+							VALUES ($1, 'FAILED', $2, NOW())
+						`, txID, "Item has been failed to sent.")
+						return
+					}
+
+					var updateStatus string
+					switch orderResp.Status {
+					case "SUCCESS":
+						updateStatus = "SUCCESS"
+					case "FAILED":
+						updateStatus = "FAILED"
+					default:
+						updateStatus = "PROCESSING"
+					}
+
+					// Use raw response from provider
+					var rawRespData interface{}
+					if len(orderResp.RawResponse) > 0 {
+						json.Unmarshal(orderResp.RawResponse, &rawRespData)
+					} else {
+						rawRespData = map[string]interface{}{
+							"ref_id":          orderResp.RefID,
+							"provider_ref_id": orderResp.ProviderRefID,
+							"status":          orderResp.Status,
+							"message":         orderResp.Message,
+							"sn":              orderResp.SN,
+						}
+					}
+					providerRespJSON, _ := json.Marshal(rawRespData)
+
+					providerRespLog := createLogEntry("ORDER_RESPONSE", rawRespData)
+
+					_, err = deps.DB.Pool.Exec(context.Background(), `
+						UPDATE transactions
+						SET status = $1::transaction_status,
+						    provider_ref_id = $2,
+						    provider_serial_number = $3,
+						    provider_response = $4,
+						    provider_logs = COALESCE(provider_logs, '[]'::jsonb) || $5::jsonb,
+						    completed_at = CASE WHEN $1::text = 'SUCCESS' THEN NOW() ELSE completed_at END,
+						    updated_at = NOW()
+						WHERE id = $6
+					`, updateStatus, orderResp.ProviderRefID, orderResp.SN, string(providerRespJSON), mustMarshalJSON([]interface{}{providerRespLog}), txID)
+
+					if err == nil {
+						// Add timeline entry: Item has been successfully sent or failed to sent (only for final status)
+						if updateStatus == "SUCCESS" || updateStatus == "FAILED" {
+							var finalMessage string
+							if updateStatus == "SUCCESS" {
+								finalMessage = "Item has been successfully sent."
+							} else {
+								finalMessage = "Item has been failed to sent."
+							}
+							_, _ = deps.DB.Pool.Exec(context.Background(), `
+								INSERT INTO transaction_logs (transaction_id, status, message, created_at)
+								VALUES ($1, $2, $3, NOW())
+							`, txID, updateStatus, finalMessage)
+						}
+
+						log.Info().
+							Str("invoice_number", invNum).
+							Str("provider", pCode).
+							Str("status", updateStatus).
+							Str("serial_number", orderResp.SN).
+							Msg("Balance transaction processed to provider successfully")
+					}
+				}()
+			}()
 
 		} else {
 			// For external payment gateways, create payment request
@@ -1110,6 +1412,8 @@ func HandleCreateOrderImpl(deps *Dependencies) http.HandlerFunc {
 				callbackURL = deps.Config.App.BaseURL + "/v2/webhooks/xendit"
 			} else if gatewayName == "BRI_DIRECT" {
 				callbackURL = deps.Config.App.BaseURL + "/v2/webhooks/bri"
+			} else if gatewayName == "PAKAILINK" {
+				callbackURL = deps.Config.App.BaseURL + "/webhooks/pakailink"
 			}
 
 			// Create payment request
@@ -1205,13 +1509,88 @@ func HandleCreateOrderImpl(deps *Dependencies) http.HandlerFunc {
 			paymentData = mapGatewayResponseToPaymentData(paymentResult, expiredAt)
 			gatewayRefID = &paymentResult.GatewayRefID
 
-			// Store payment data as JSONB
-			paymentDataJSON, _ := json.Marshal(paymentData)
+			// Determine payment type
+			paymentType := "OTHER"
+			paymentCodeValue := ""
+			switch {
+			case paymentResult.QRCode != "":
+				paymentType = "QRIS"
+				paymentCodeValue = paymentResult.QRCode
+			case paymentResult.VirtualAccount != "":
+				paymentType = "VIRTUAL_ACCOUNT"
+				paymentCodeValue = paymentResult.VirtualAccount
+			case paymentResult.PaymentURL != "":
+				paymentType = "E_WALLET"
+				paymentCodeValue = paymentResult.PaymentURL
+			case paymentResult.PaymentCode != "":
+				paymentType = "RETAIL"
+				paymentCodeValue = paymentResult.PaymentCode
+			}
+
+			// Marshal raw request/response for audit
+			rawReqJSON, _ := json.Marshal(map[string]interface{}{
+				"channel": paymentCode,
+				"gateway": gatewayName,
+				"amount":  totalAmount,
+				"invoice": invoiceNumber,
+				"expiry":  expiredAt,
+			})
+			rawRespJSON, _ := json.Marshal(map[string]interface{}{
+				"ref_id":          paymentResult.RefID,
+				"gateway_ref_id":  paymentResult.GatewayRefID,
+				"status":          paymentResult.Status,
+				"virtual_account": paymentResult.VirtualAccount,
+				"qr_code":         paymentResult.QRCode,
+				"payment_url":     paymentResult.PaymentURL,
+				"payment_code":    paymentResult.PaymentCode,
+				"bank_code":       paymentResult.BankCode,
+				"account_name":    paymentResult.AccountName,
+				"expires_at":      paymentResult.ExpiresAt,
+			})
+
+			// Insert into payment_data table
+			_, err = tx.Exec(ctx, `
+				INSERT INTO payment_data (
+					transaction_id, payment_channel_id, invoice_number,
+					payment_code, payment_type, gateway_ref_id,
+					bank_code, account_name,
+					amount, fee, total_amount, currency,
+					status, expired_at,
+					raw_request, raw_response,
+					created_at, updated_at
+				) VALUES (
+					$1, $2, $3,
+					$4, $5, $6,
+					$7, $8,
+					$9, $10, $11, $12,
+					$13, $14,
+					$15, $16,
+					NOW(), NOW()
+				)
+			`, transactionID, paymentChannelID, invoiceNumber,
+				paymentCodeValue, paymentType, paymentResult.GatewayRefID,
+				paymentResult.BankCode, paymentResult.AccountName,
+				totalAmount-paymentFee, paymentFee, totalAmount, currency,
+				"PENDING", expiredAt,
+				rawReqJSON, rawRespJSON)
+
+			if err != nil {
+				log.Warn().
+					Err(err).
+					Str("endpoint", "/v2/orders").
+					Str("error_type", "PAYMENT_DATA_INSERT_ERROR").
+					Str("transaction_id", transactionID).
+					Msg("Failed to insert payment data (non-fatal)")
+			}
+
+			// Also update transactions table with gateway ref
+			paymentLogEntry := createLogEntry("PAYMENT_CREATED", paymentData)
+			paymentLogJSON, _ := json.Marshal([]interface{}{paymentLogEntry})
 			_, err = tx.Exec(ctx, `
 				UPDATE transactions
-				SET payment_gateway_ref_id = $1, provider_response = $2, updated_at = NOW()
+				SET payment_gateway_ref_id = $1, payment_logs = $2, updated_at = NOW()
 				WHERE id = $3
-			`, gatewayRefID, paymentDataJSON, transactionID)
+			`, gatewayRefID, paymentLogJSON, transactionID)
 
 			if err != nil {
 				log.Warn().
@@ -1220,7 +1599,6 @@ func HandleCreateOrderImpl(deps *Dependencies) http.HandlerFunc {
 					Str("error_type", "PAYMENT_DATA_UPDATE_ERROR").
 					Str("transaction_id", transactionID).
 					Msg("Failed to update payment data (non-fatal)")
-				// Non-fatal, continue
 			}
 		}
 
@@ -1238,21 +1616,49 @@ func HandleCreateOrderImpl(deps *Dependencies) http.HandlerFunc {
 
 		// Commit transaction
 		if err = tx.Commit(ctx); err != nil {
-
 			utils.WriteInternalServerError(w)
 			return
 		}
 
-		// Build response
+		// Fetch timeline entries (after commit, use connection pool)
+		var timeline []map[string]interface{}
+		timelineRows, err := deps.DB.Pool.Query(ctx, `
+			SELECT status, message, created_at
+			FROM transaction_logs
+			WHERE transaction_id = $1
+			ORDER BY created_at ASC
+		`, transactionID)
+		if err == nil {
+			defer timelineRows.Close()
+			for timelineRows.Next() {
+				var tlStatus, tlMessage string
+				var tlTimestamp time.Time
+				if err := timelineRows.Scan(&tlStatus, &tlMessage, &tlTimestamp); err == nil {
+					timeline = append(timeline, map[string]interface{}{
+						"status":    tlStatus,
+						"message":   tlMessage,
+						"timestamp": tlTimestamp.Format(time.RFC3339),
+					})
+				}
+			}
+		}
+		if timeline == nil {
+			timeline = []map[string]interface{}{}
+		}
+
+		// Build response (same format as GET /invoices)
 		response := buildOrderResponse(
 			invoiceNumber, transactionStatus, paymentStatus,
-			productCode, productName, skuCode, skuName, quantity,
+			productCode, productName, productThumbnail,
+			skuCode, skuName, skuImage,
+			quantity,
 			userId, zoneId, nickname,
 			subtotal, discountAmount, paymentFee, totalAmount, currency,
-			paymentCode, paymentName, paymentInstruction,
+			paymentCode, paymentName, paymentInstruction, paymentImage, paymentCategoryCode,
 			paymentData, promoCode,
 			contactEmail, contactPhone,
 			time.Now(), expiredAt,
+			timeline,
 		)
 
 		utils.WriteSuccessJSON(w, response)
@@ -1348,16 +1754,20 @@ func extractIPAddress(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// buildOrderResponse builds the order response object
+// buildOrderResponse builds the order response object (same format as GET /invoices)
 func buildOrderResponse(
 	invoiceNumber, status, paymentStatus string,
-	productCode, productName, skuCode, skuName string, quantity int,
+	productCode, productName string, productThumbnail *string,
+	skuCode, skuName string, skuImage *string,
+	quantity int,
 	userId, zoneId, nickname string,
 	subtotal, discount, paymentFee, total int64, currency string,
 	paymentCode, paymentName, paymentInstruction string,
+	paymentImage *string, paymentCategoryCode *string,
 	paymentData map[string]interface{}, promoCode string,
 	contactEmail, contactPhone *string,
 	createdAt, expiredAt time.Time,
+	timeline []map[string]interface{},
 ) map[string]interface{} {
 
 	// Build account object
@@ -1369,6 +1779,30 @@ func buildOrderResponse(
 	}
 	if nickname != "" {
 		account["nickname"] = nickname
+	}
+
+	// Build product data object
+	productData := map[string]interface{}{
+		"code": productCode,
+		"name": productName,
+	}
+	if productThumbnail != nil && *productThumbnail != "" {
+		productData["image"] = *productThumbnail
+	}
+
+	// Build SKU data object
+	skuData := map[string]interface{}{
+		"code": skuCode,
+		"name": skuName,
+	}
+	if skuImage != nil && *skuImage != "" {
+		skuData["image"] = *skuImage
+	}
+
+	// Build status object
+	statusData := map[string]interface{}{
+		"paymentStatus":     paymentStatus,
+		"transactionStatus": status,
 	}
 
 	// Build pricing object
@@ -1383,10 +1817,23 @@ func buildOrderResponse(
 
 	// Build payment object
 	payment := map[string]interface{}{
-		"code":        paymentCode,
-		"name":        paymentName,
-		"instruction": paymentInstruction,
-		"expiredAt":   expiredAt.Format(time.RFC3339),
+		"code": paymentCode,
+		"name": paymentName,
+	}
+
+	// Add payment image if available
+	if paymentImage != nil && *paymentImage != "" {
+		payment["image"] = *paymentImage
+	}
+
+	// Add payment category code if available
+	if paymentCategoryCode != nil && *paymentCategoryCode != "" {
+		payment["categoryCode"] = *paymentCategoryCode
+	}
+
+	// Add instruction if available
+	if paymentInstruction != "" {
+		payment["instruction"] = paymentInstruction
 	}
 
 	// Add unified paymentCode (QRIS string, VA number, redirect URL, or retail code)
@@ -1404,9 +1851,13 @@ func buildOrderResponse(
 	if accountName, ok := paymentData["accountName"].(string); ok && accountName != "" {
 		payment["accountName"] = accountName
 	}
-	if deeplink, ok := paymentData["deeplink"].(string); ok && deeplink != "" {
-		payment["deeplink"] = deeplink
+	if gatewayRef, ok := paymentData["gatewayRef"].(string); ok && gatewayRef != "" {
+		payment["gatewayRefId"] = gatewayRef
 	}
+
+	// Add expiredAt
+	payment["expiredAt"] = expiredAt.Format(time.RFC3339)
+
 	if paidAt, ok := paymentData["paidAt"].(time.Time); ok {
 		payment["paidAt"] = paidAt.Format(time.RFC3339)
 	}
@@ -1414,46 +1865,39 @@ func buildOrderResponse(
 		payment["instructions"] = instructions
 	}
 
-	// Build order object
-	order := map[string]interface{}{
-		"invoiceNumber": invoiceNumber,
-		"status":        status,
-		"productCode":   productCode,
-		"productName":   productName,
-		"skuCode":       skuCode,
-		"skuName":       skuName,
-		"quantity":      quantity,
-		"account":       account,
-		"pricing":       pricing,
-		"payment":       payment,
-		"createdAt":     createdAt.Format(time.RFC3339),
-		"expiredAt":     expiredAt.Format(time.RFC3339),
-	}
-
-	// Add promo if exists
-	if promoCode != "" && discount > 0 {
-		order["promo"] = map[string]interface{}{
-			"code":           promoCode,
-			"discountAmount": float64(discount) / 100,
-		}
-	}
-
-	// Add contact if exists
+	// Build contact object
+	var contact map[string]interface{}
 	if contactEmail != nil || contactPhone != nil {
-		contact := make(map[string]interface{})
+		contact = make(map[string]interface{})
 		if contactEmail != nil {
 			contact["email"] = *contactEmail
 		}
 		if contactPhone != nil {
 			contact["phoneNumber"] = *contactPhone
 		}
-		order["contact"] = contact
 	}
 
-	return map[string]interface{}{
-		"step":  "SUCCESS",
-		"order": order,
+	// Build response (same format as GET /invoices)
+	response := map[string]interface{}{
+		"invoiceNumber": invoiceNumber,
+		"status":        statusData,
+		"product":       productData,
+		"sku":           skuData,
+		"quantity":      quantity,
+		"account":       account,
+		"pricing":       pricing,
+		"payment":       payment,
+		"timeline":      timeline,
+		"createdAt":     createdAt.Format(time.RFC3339),
+		"expiredAt":     expiredAt.Format(time.RFC3339),
 	}
+
+	// Add contact if exists
+	if contact != nil {
+		response["contact"] = contact
+	}
+
+	return response
 }
 
 // getProviderForProduct maps product code to game check provider
@@ -1484,6 +1928,8 @@ func getFallbackGateway(channelCode, primaryGateway string) string {
 		"BRI_DIRECT": "XENDIT",
 		// If BCA_DIRECT not available, fall back to XENDIT
 		"BCA_DIRECT": "XENDIT",
+		// If PAKAILINK not available, fall back to XENDIT for VA channels
+		"PAKAILINK": "XENDIT",
 	}
 
 	if fallback, ok := fallbacks[primaryGateway]; ok {
@@ -1498,7 +1944,8 @@ func getFallbackGateway(channelCode, primaryGateway string) string {
 // - GOPAY, SHOPEEPAY -> MIDTRANS
 // - ALFAMART, INDOMARET -> XENDIT
 // - BRI_VA -> BRI_DIRECT (BRI SNAP API)
-// - Other Virtual Accounts -> XENDIT
+// - Virtual Accounts -> PAKAILINK (PakaiLink SNAP VA)
+// - Fallback -> XENDIT
 func getGatewayForChannel(channelCode string) string {
 	gatewayMap := map[string]string{
 		// QRIS & E-Wallet via DANA Gapura
@@ -1517,17 +1964,29 @@ func getGatewayForChannel(channelCode string) string {
 		"BRI_VA": "BRI_DIRECT",
 		"VA_BRI": "BRI_DIRECT", // alias
 
-		// Virtual Accounts via Xendit
-		"BCA_VA":     "XENDIT",
-		"VA_BCA":     "XENDIT",
-		"BNI_VA":     "XENDIT",
-		"VA_BNI":     "XENDIT",
-		"MANDIRI_VA": "XENDIT",
-		"VA_MANDIRI": "XENDIT",
-		"PERMATA_VA": "XENDIT",
-		"VA_PERMATA": "XENDIT",
-		"CIMB_VA":    "XENDIT",
-		"VA_CIMB":    "XENDIT",
+		// Virtual Accounts via PakaiLink SNAP
+		"BCA_VA":      "PAKAILINK",
+		"VA_BCA":      "PAKAILINK",
+		"BNI_VA":      "PAKAILINK",
+		"VA_BNI":      "PAKAILINK",
+		"BSI_VA":      "PAKAILINK",
+		"VA_BSI":      "PAKAILINK",
+		"CIMB_VA":     "PAKAILINK",
+		"VA_CIMB":     "PAKAILINK",
+		"DANAMON_VA":  "PAKAILINK",
+		"VA_DANAMON":  "PAKAILINK",
+		"MANDIRI_VA":  "PAKAILINK",
+		"VA_MANDIRI":  "PAKAILINK",
+		"BMI_VA":      "PAKAILINK",
+		"VA_BMI":      "PAKAILINK",
+		"BNC_VA":      "PAKAILINK",
+		"VA_BNC":      "PAKAILINK",
+		"OCBC_VA":     "PAKAILINK",
+		"VA_OCBC":     "PAKAILINK",
+		"PERMATA_VA":  "PAKAILINK",
+		"VA_PERMATA":  "PAKAILINK",
+		"SINARMAS_VA": "PAKAILINK",
+		"VA_SINARMAS": "PAKAILINK",
 	}
 
 	gateway, exists := gatewayMap[channelCode]

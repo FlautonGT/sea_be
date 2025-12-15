@@ -163,12 +163,13 @@ type UsageByItem struct {
 
 // Request DTOs
 type ValidatePromoRequest struct {
-	PromoCode   string  `json:"promoCode" validate:"required"`
-	ProductCode string  `json:"productCode" validate:"required"`
-	SKUCode     string  `json:"skuCode" validate:"required"`
-	PaymentCode string  `json:"paymentCode" validate:"required"`
-	Region      string  `json:"region" validate:"required"`
-	Amount      float64 `json:"amount" validate:"required,gt=0"`
+	PromoCode   string                 `json:"promoCode" validate:"required"`
+	ProductCode string                 `json:"productCode" validate:"required"`
+	SKUCode     string                 `json:"skuCode" validate:"required"`
+	PaymentCode string                 `json:"paymentCode" validate:"required"`
+	Region      string                 `json:"region" validate:"required"`
+	Quantity    int                    `json:"quantity"` // Default: 1
+	Account     map[string]interface{} `json:"account"` // Can contain userId, serverId, zoneId, email, etc.
 }
 
 type CreatePromoRequest struct {

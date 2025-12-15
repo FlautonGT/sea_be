@@ -92,12 +92,7 @@ func (g *MidtransGateway) createGopayPayment(ctx context.Context, req *PaymentRe
 			"callback_url":    req.SuccessURL,
 		},
 		"item_details": []map[string]interface{}{
-			{
-				"id":       req.Metadata["sku_code"],
-				"price":    int64(req.Amount),
-				"quantity": 1,
-				"name":     truncateString(req.Description, 50),
-			},
+			buildMidtransItemDetail(req),
 		},
 	}
 
@@ -132,12 +127,7 @@ func (g *MidtransGateway) createShopeepayPayment(ctx context.Context, req *Payme
 			"callback_url": req.SuccessURL,
 		},
 		"item_details": []map[string]interface{}{
-			{
-				"id":       req.Metadata["sku_code"],
-				"price":    int64(req.Amount),
-				"quantity": 1,
-				"name":     truncateString(req.Description, 50),
-			},
+			buildMidtransItemDetail(req),
 		},
 	}
 
@@ -393,6 +383,23 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// buildMidtransItemDetail builds item_details for Midtrans API
+// If sku_code is not provided or empty, uses RefID (invoice number) as fallback
+func buildMidtransItemDetail(req *PaymentRequest) map[string]interface{} {
+	itemID := req.Metadata["sku_code"]
+	if itemID == "" {
+		// Use RefID (invoice number) as fallback for deposits or when sku_code is not provided
+		itemID = req.RefID
+	}
+
+	return map[string]interface{}{
+		"id":       itemID,
+		"price":    int64(req.Amount),
+		"quantity": 1,
+		"name":     truncateString(req.Description, 50),
+	}
 }
 
 // parseFloat parses string to float64

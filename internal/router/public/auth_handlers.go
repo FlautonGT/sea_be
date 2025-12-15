@@ -111,25 +111,27 @@ type AdminRow struct {
 
 // UserRow represents user data from database
 type UserRow struct {
-	ID                string
-	FirstName         string
-	LastName          *string
-	Email             string
-	PasswordHash      *string
-	PhoneNumber       *string
-	Status            string
-	ProfilePicture    *string
-	PrimaryRegion     string
-	MFAStatus         string
-	MembershipLevel   string
-	BalanceIDR        int64
-	BalanceMYR        int64
-	BalancePHP        int64
-	BalanceSGD        int64
-	BalanceTHB        int64
-	TotalTransactions int64
-	TotalSpentIDR     int64
-	EmailVerifiedAt   *time.Time
+	ID              string
+	FirstName       string
+	LastName        *string
+	Email           string
+	PasswordHash    *string
+	PhoneNumber     *string
+	Status          string
+	ProfilePicture  *string
+	PrimaryRegion   string
+	CurrentRegion   string
+	MFAStatus       string
+	MembershipLevel string
+	BalanceIDR      int64
+	BalanceMYR      int64
+	BalancePHP      int64
+	BalanceSGD      int64
+	BalanceTHB      int64
+	TotalSpentIDR   int64
+	EmailVerifiedAt *time.Time
+	CreatedAt       *time.Time
+	LastLoginAt     *time.Time
 }
 
 // handleAdminLoginImpl implements the admin login logic
@@ -294,29 +296,19 @@ func HandleUserLoginImpl(deps *Dependencies) http.HandlerFunc {
 		var user UserRow
 		err := deps.DB.Pool.QueryRow(ctx, `
 			SELECT 
-				id, 
-				first_name, 
-				last_name, 
-				email, 
-				password_hash, 
-				status,
-				profile_picture,
-				primary_region,
-				mfa_status,
-				membership_level
+				id, first_name, last_name, email, password_hash, 
+				phone_number, status, profile_picture,
+				primary_region, current_region, mfa_status, membership_level,
+				balance_idr, balance_myr, balance_php, balance_sgd, balance_thb,
+				total_spent_idr, email_verified_at, created_at, last_login_at
 			FROM users
 			WHERE LOWER(email) = LOWER($1)
 		`, req.Email).Scan(
-			&user.ID,
-			&user.FirstName,
-			&user.LastName,
-			&user.Email,
-			&user.PasswordHash,
-			&user.Status,
-			&user.ProfilePicture,
-			&user.PrimaryRegion,
-			&user.MFAStatus,
-			&user.MembershipLevel,
+			&user.ID, &user.FirstName, &user.LastName, &user.Email, &user.PasswordHash,
+			&user.PhoneNumber, &user.Status, &user.ProfilePicture,
+			&user.PrimaryRegion, &user.CurrentRegion, &user.MFAStatus, &user.MembershipLevel,
+			&user.BalanceIDR, &user.BalanceMYR, &user.BalancePHP, &user.BalanceSGD, &user.BalanceTHB,
+			&user.TotalSpentIDR, &user.EmailVerifiedAt, &user.CreatedAt, &user.LastLoginAt,
 		)
 
 		if err != nil {
@@ -418,14 +410,7 @@ func HandleUserLoginImpl(deps *Dependencies) http.HandlerFunc {
 		`, user.ID)
 
 		// Build user response
-		lastName := ""
-		if user.LastName != nil {
-			lastName = *user.LastName
-		}
-		profilePic := ""
-		if user.ProfilePicture != nil {
-			profilePic = *user.ProfilePicture
-		}
+		userResponse := buildUserResponse(user)
 
 		utils.WriteSuccessJSON(w, UserLoginSuccessResponse{
 			Step: "SUCCESS",
@@ -435,21 +420,80 @@ func HandleUserLoginImpl(deps *Dependencies) http.HandlerFunc {
 				ExpiresIn:    int64(deps.Config.JWT.AccessTokenExpiry.Seconds()),
 				TokenType:    "Bearer",
 			},
-			User: map[string]interface{}{
-				"id":             user.ID,
-				"firstName":      user.FirstName,
-				"lastName":       lastName,
-				"email":          user.Email,
-				"profilePicture": profilePic,
-				"status":         user.Status,
-				"primaryRegion":  user.PrimaryRegion,
-				"membership": map[string]interface{}{
-					"level": user.MembershipLevel,
-					"name":  getMembershipName(user.MembershipLevel),
-				},
-				"mfaStatus": user.MFAStatus,
-			},
+			User: userResponse,
 		})
+	}
+}
+
+// buildUserResponse builds the user object for login/profile responses
+func buildUserResponse(user UserRow) map[string]interface{} {
+	lastName := ""
+	if user.LastName != nil {
+		lastName = *user.LastName
+	}
+	profilePic := ""
+	if user.ProfilePicture != nil {
+		profilePic = *user.ProfilePicture
+	}
+	phoneNumber := ""
+	if user.PhoneNumber != nil {
+		phoneNumber = *user.PhoneNumber
+	}
+
+	// Get currency based on region
+	currency := getCurrencyByRegion(user.CurrentRegion)
+
+	response := map[string]interface{}{
+		"id":             user.ID,
+		"firstName":      user.FirstName,
+		"lastName":       lastName,
+		"email":          user.Email,
+		"phoneNumber":    phoneNumber,
+		"profilePicture": profilePic,
+		"status":         user.Status,
+		"primaryRegion":  user.PrimaryRegion,
+		"currentRegion":  user.CurrentRegion,
+		"currency":       currency,
+		"balance": map[string]interface{}{
+			"IDR": user.BalanceIDR,
+			"MYR": user.BalanceMYR,
+			"PHP": user.BalancePHP,
+			"SGD": user.BalanceSGD,
+			"THB": user.BalanceTHB,
+		},
+		"membership": map[string]interface{}{
+			"level": user.MembershipLevel,
+			"name":  getMembershipName(user.MembershipLevel),
+		},
+		"mfaStatus": user.MFAStatus,
+	}
+
+	// Add timestamps
+	if user.CreatedAt != nil {
+		response["createdAt"] = user.CreatedAt.Format(time.RFC3339)
+	}
+	if user.LastLoginAt != nil {
+		response["lastLoginAt"] = user.LastLoginAt.Format(time.RFC3339)
+	}
+
+	return response
+}
+
+// getCurrencyByRegion returns the currency for a region
+func getCurrencyByRegion(region string) string {
+	switch region {
+	case "ID":
+		return "IDR"
+	case "MY":
+		return "MYR"
+	case "PH":
+		return "PHP"
+	case "SG":
+		return "SGD"
+	case "TH":
+		return "THB"
+	default:
+		return "IDR"
 	}
 }
 
@@ -550,4 +594,104 @@ func extractBearerToken(r *http.Request) string {
 	}
 
 	return parts[1]
+}
+
+// VerifyMFARequest represents the MFA verification request
+type VerifyMFARequest struct {
+	MFAToken string `json:"mfaToken"`
+	Code     string `json:"code"`
+}
+
+// HandleVerifyMFAImpl implements MFA verification during login
+func HandleVerifyMFAImpl(deps *Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req VerifyMFARequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			utils.WriteBadRequestError(w, "Invalid request body")
+			return
+		}
+
+		// Validate request
+		if req.MFAToken == "" || req.Code == "" {
+			utils.WriteValidationErrorJSON(w, "Validation failed", map[string]string{
+				"mfaToken": "MFA token is required",
+				"code":     "Verification code is required",
+			})
+			return
+		}
+
+		// Validate MFA token
+		claims, err := deps.JWTService.ValidateMFAToken(req.MFAToken)
+		if err != nil {
+			utils.WriteErrorJSON(w, http.StatusUnauthorized, "INVALID_MFA_TOKEN",
+				"MFA token is invalid or expired", "")
+			return
+		}
+
+		userID := claims.Subject // User ID is stored in Subject field
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		// Get user data and MFA secret
+		var user UserRow
+		var mfaSecret *string
+		err = deps.DB.Pool.QueryRow(ctx, `
+			SELECT 
+				id, first_name, last_name, email, password_hash, 
+				phone_number, status, profile_picture,
+				primary_region, current_region, mfa_status, membership_level,
+				balance_idr, balance_myr, balance_php, balance_sgd, balance_thb,
+				total_spent_idr, email_verified_at, created_at, last_login_at,
+				mfa_secret
+			FROM users
+			WHERE id = $1
+		`, userID).Scan(
+			&user.ID, &user.FirstName, &user.LastName, &user.Email, &user.PasswordHash,
+			&user.PhoneNumber, &user.Status, &user.ProfilePicture,
+			&user.PrimaryRegion, &user.CurrentRegion, &user.MFAStatus, &user.MembershipLevel,
+			&user.BalanceIDR, &user.BalanceMYR, &user.BalancePHP, &user.BalanceSGD, &user.BalanceTHB,
+			&user.TotalSpentIDR, &user.EmailVerifiedAt, &user.CreatedAt, &user.LastLoginAt,
+			&mfaSecret,
+		)
+
+		if err != nil {
+			utils.WriteErrorJSON(w, http.StatusUnauthorized, "USER_NOT_FOUND",
+				"User not found", "")
+			return
+		}
+
+		// Verify MFA code
+		if mfaSecret == nil || !utils.ValidateMFACode(*mfaSecret, req.Code) {
+			utils.WriteErrorJSON(w, http.StatusBadRequest, "INVALID_CODE",
+				"Invalid verification code", "")
+			return
+		}
+
+		// Generate tokens
+		accessToken, refreshToken, err := generateUserTokens(deps, user)
+		if err != nil {
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		// Update last login
+		_, _ = deps.DB.Pool.Exec(ctx, `
+			UPDATE users SET last_login_at = NOW() WHERE id = $1
+		`, user.ID)
+
+		// Build response
+		userResponse := buildUserResponse(user)
+
+		utils.WriteSuccessJSON(w, UserLoginSuccessResponse{
+			Step: "SUCCESS",
+			Token: TokenResponse{
+				AccessToken:  accessToken,
+				RefreshToken: refreshToken,
+				ExpiresIn:    int64(deps.Config.JWT.AccessTokenExpiry.Seconds()),
+				TokenType:    "Bearer",
+			},
+			User: userResponse,
+		})
+	}
 }

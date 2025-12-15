@@ -49,7 +49,7 @@ WORKDIR /app
 COPY --from=builder /app/bin/gate-api /app/gate-api
 
 # Copy migrations (for embedded migrations if needed)
-COPY --from=builder /app/migrations /app/migrations
+COPY --from=builder /app/database/migrations /app/database/migrations
 
 # Create directories
 # Note: keys directory should be mounted as volume in production for security

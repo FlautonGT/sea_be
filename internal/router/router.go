@@ -146,6 +146,9 @@ func setupPublicRoutes(r chi.Router, deps *Dependencies) {
 	// GET /v2/invoices
 	r.Get("/invoices", public.HandleGetInvoice(toPublicDeps(deps)))
 
+	// GET /v2/deposits/invoices
+	r.Get("/deposits/invoices", public.HandleGetDepositInvoice(toPublicDeps(deps)))
+
 }
 
 func setupAuthRoutes(r chi.Router, deps *Dependencies) {
@@ -471,4 +474,5 @@ func setupWebhookRoutes(r chi.Router, deps *Dependencies) {
 	r.Post("/xendit", public.HandleXenditWebhook(mainDeps))
 	r.Post("/midtrans", public.HandleMidtransWebhook(mainDeps))
 	r.Post("/dana", public.HandleDANAWebhook(mainDeps))
+	r.Post("/pakailink", public.HandlePakaiLinkWebhook(mainDeps))
 }

@@ -14,10 +14,10 @@ import (
 
 // VIPResellerProvider implements the Provider interface for VIP Reseller
 type VIPResellerProvider struct {
-	apiID  string
-	apiKey string
+	apiID   string
+	apiKey  string
 	baseURL string
-	client *http.Client
+	client  *http.Client
 }
 
 // NewVIPResellerProvider creates a new VIP Reseller provider instance
@@ -75,17 +75,17 @@ type VIPProduct struct {
 
 // VIPTransaction represents a transaction from VIP Reseller
 type VIPTransaction struct {
-	TrxID      string  `json:"trx_id"`
-	RefID      string  `json:"ref_id"`
-	Service    string  `json:"service"`
-	Data       string  `json:"data"`
-	Price      float64 `json:"price"`
-	Status     string  `json:"status"`
-	Message    string  `json:"message"`
-	SN         string  `json:"sn"`
-	Balance    float64 `json:"balance"`
-	CreatedAt  string  `json:"created_at"`
-	UpdatedAt  string  `json:"updated_at"`
+	TrxID     string  `json:"trx_id"`
+	RefID     string  `json:"ref_id"`
+	Service   string  `json:"service"`
+	Data      string  `json:"data"`
+	Price     float64 `json:"price"`
+	Status    string  `json:"status"`
+	Message   string  `json:"message"`
+	SN        string  `json:"sn"`
+	Balance   float64 `json:"balance"`
+	CreatedAt string  `json:"created_at"`
+	UpdatedAt string  `json:"updated_at"`
 }
 
 // VIPBalance represents balance info from VIP Reseller
@@ -245,6 +245,8 @@ func (v *VIPResellerProvider) CreateOrder(ctx context.Context, req *OrderRequest
 		Message:       trx.Message,
 		SN:            trx.SN,
 		CreatedAt:     time.Now(),
+		RawRequest:    body,
+		RawResponse:   respBody,
 	}, nil
 }
 
@@ -381,4 +383,3 @@ func (v *VIPResellerProvider) mapStatus(status string) string {
 		return StatusProcessing
 	}
 }
-

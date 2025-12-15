@@ -2,15 +2,20 @@ package user
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"seaply/internal/middleware"
+	"seaply/internal/payment"
 	"seaply/internal/utils"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog/log"
 )
 
 // ============================================
@@ -39,30 +44,92 @@ func HandleGetUserTransactionsImpl(deps *Dependencies) http.HandlerFunc {
 		}
 
 		status := r.URL.Query().Get("status")
+		paymentStatus := r.URL.Query().Get("paymentStatus")
+		search := r.URL.Query().Get("search")
 		startDate := r.URL.Query().Get("startDate")
 		endDate := r.URL.Query().Get("endDate")
+		regionParam := r.URL.Query().Get("region")
 
 		offset := (page - 1) * limit
 
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 
-		// Get overview stats
-		var totalTransactions, successCount, pendingCount, failedCount int
-		var totalSpent int64
+		// Get user's current region if region param not provided
+		var userRegion string
+		if regionParam == "" {
+			_ = deps.DB.Pool.QueryRow(ctx, `SELECT current_region FROM users WHERE id = $1`, userID).Scan(&userRegion)
+		} else {
+			userRegion = strings.ToUpper(regionParam)
+		}
+
+		// Build WHERE clause with all filters
+		whereClause := "WHERE t.user_id = $1"
+		args := []interface{}{userID}
+		argCount := 1
+
+		if userRegion != "" {
+			argCount++
+			whereClause += " AND t.region = $" + strconv.Itoa(argCount) + "::region_code"
+			args = append(args, userRegion)
+		}
+
+		// Build filter conditions for overview (same as list query)
+		overviewWhereClause := whereClause
+		overviewArgs := make([]interface{}, len(args))
+		copy(overviewArgs, args)
+		overviewArgCount := argCount
+
+		if status != "" && status != "ALL" {
+			overviewArgCount++
+			overviewWhereClause += " AND t.status = $" + strconv.Itoa(overviewArgCount) + "::transaction_status"
+			overviewArgs = append(overviewArgs, status)
+		}
+
+		if paymentStatus != "" {
+			overviewArgCount++
+			overviewWhereClause += " AND t.payment_status = $" + strconv.Itoa(overviewArgCount) + "::payment_status"
+			overviewArgs = append(overviewArgs, paymentStatus)
+		}
+
+		if search != "" {
+			overviewArgCount++
+			overviewWhereClause += " AND t.invoice_number ILIKE $" + strconv.Itoa(overviewArgCount)
+			overviewArgs = append(overviewArgs, "%"+search+"%")
+		}
+
+		if startDate != "" {
+			overviewArgCount++
+			overviewWhereClause += " AND t.created_at >= $" + strconv.Itoa(overviewArgCount) + "::timestamp"
+			overviewArgs = append(overviewArgs, startDate)
+		}
+
+		if endDate != "" {
+			overviewArgCount++
+			overviewWhereClause += " AND t.created_at <= $" + strconv.Itoa(overviewArgCount) + "::timestamp"
+			overviewArgs = append(overviewArgs, endDate+" 23:59:59")
+		}
+
+		// Get overview stats with all filters applied
+		// transaction_status: PENDING, PROCESSING, SUCCESS, FAILED
+		// payment_status: UNPAID, PAID, FAILED, EXPIRED, REFUNDED
+		var totalTransactions, successCount, processingCount, pendingCount, failedCount int
+		var totalPurchase int64
 
 		err := deps.DB.Pool.QueryRow(ctx, `
 			SELECT
 				COUNT(*) as total,
-				COALESCE(SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END), 0) as success,
-				COALESCE(SUM(CASE WHEN status IN ('PENDING', 'PAID', 'PROCESSING') THEN 1 ELSE 0 END), 0) as pending,
-				COALESCE(SUM(CASE WHEN status IN ('FAILED', 'EXPIRED', 'REFUNDED') THEN 1 ELSE 0 END), 0) as failed,
-				COALESCE(SUM(CASE WHEN status = 'SUCCESS' THEN total_amount ELSE 0 END), 0) as total_spent
-			FROM transactions
-			WHERE user_id = $1
-		`, userID).Scan(&totalTransactions, &successCount, &pendingCount, &failedCount, &totalSpent)
+				COALESCE(SUM(CASE WHEN t.status = 'SUCCESS'::transaction_status THEN 1 ELSE 0 END), 0) as success,
+				COALESCE(SUM(CASE WHEN t.status = 'PROCESSING'::transaction_status THEN 1 ELSE 0 END), 0) as processing,
+				COALESCE(SUM(CASE WHEN t.status = 'PENDING'::transaction_status THEN 1 ELSE 0 END), 0) as pending,
+				COALESCE(SUM(CASE WHEN t.status = 'FAILED'::transaction_status THEN 1 ELSE 0 END), 0) as failed,
+				COALESCE(SUM(CASE WHEN t.status = 'SUCCESS'::transaction_status THEN t.total_amount ELSE 0 END), 0) as total_purchase
+			FROM transactions t
+			`+overviewWhereClause+`
+		`, overviewArgs...).Scan(&totalTransactions, &successCount, &processingCount, &pendingCount, &failedCount, &totalPurchase)
 
 		if err != nil && err != pgx.ErrNoRows {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to get transaction overview")
 			utils.WriteInternalServerError(w)
 			return
 		}
@@ -73,34 +140,47 @@ func HandleGetUserTransactionsImpl(deps *Dependencies) http.HandlerFunc {
 				t.id, t.invoice_number, t.status, t.payment_status,
 				p.code as product_code, p.title as product_name,
 				s.code as sku_code, s.name as sku_name,
-				t.quantity, t.subtotal, t.discount_amount, t.payment_fee, t.total_amount,
-				t.currency, t.serial_number, t.created_at, t.completed_at
+				t.account_inputs, t.account_nickname,
+				t.quantity, t.sell_price, COALESCE(t.discount_amount, 0), COALESCE(t.payment_fee, 0), t.total_amount,
+				t.currency, t.provider_serial_number,
+				pc.code as payment_code, pc.name as payment_name,
+				t.created_at
 			FROM transactions t
 			JOIN products p ON t.product_id = p.id
 			JOIN skus s ON t.sku_id = s.id
-			WHERE t.user_id = $1
+			JOIN payment_channels pc ON t.payment_channel_id = pc.id
+			` + whereClause + `
 		`
 
-		args := []interface{}{userID}
-		argCount := 1
-
 		// Add filters
-		if status != "" {
+		if status != "" && status != "ALL" {
 			argCount++
-			query += " AND t.status = $" + strconv.Itoa(argCount)
+			query += " AND t.status = $" + strconv.Itoa(argCount) + "::transaction_status"
 			args = append(args, status)
+		}
+
+		if paymentStatus != "" {
+			argCount++
+			query += " AND t.payment_status = $" + strconv.Itoa(argCount) + "::payment_status"
+			args = append(args, paymentStatus)
+		}
+
+		if search != "" {
+			argCount++
+			query += " AND t.invoice_number ILIKE $" + strconv.Itoa(argCount)
+			args = append(args, "%"+search+"%")
 		}
 
 		if startDate != "" {
 			argCount++
-			query += " AND t.created_at >= $" + strconv.Itoa(argCount)
+			query += " AND t.created_at >= $" + strconv.Itoa(argCount) + "::timestamp"
 			args = append(args, startDate)
 		}
 
 		if endDate != "" {
 			argCount++
-			query += " AND t.created_at <= $" + strconv.Itoa(argCount)
-			args = append(args, endDate)
+			query += " AND t.created_at <= $" + strconv.Itoa(argCount) + "::timestamp"
+			args = append(args, endDate+" 23:59:59")
 		}
 
 		query += " ORDER BY t.created_at DESC"
@@ -115,6 +195,7 @@ func HandleGetUserTransactionsImpl(deps *Dependencies) http.HandlerFunc {
 		// Execute query
 		rows, err := deps.DB.Pool.Query(ctx, query, args...)
 		if err != nil {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to query transactions")
 			utils.WriteInternalServerError(w)
 			return
 		}
@@ -122,76 +203,192 @@ func HandleGetUserTransactionsImpl(deps *Dependencies) http.HandlerFunc {
 
 		transactions := []map[string]interface{}{}
 		for rows.Next() {
-			var id, invoiceNumber, status, paymentStatus, productCode, productName, skuCode, skuName string
+			var id, invoiceNumber, txStatus, pStatus, productCode, productName, skuCode, skuName string
+			var accountInputs, accountNickname sql.NullString
 			var quantity int
-			var subtotal, discountAmount, paymentFee, totalAmount int64
-			var currency, serialNumber string
-			var createdAt, completedAt time.Time
-			var completedAtPtr *time.Time
+			var sellPrice, discountAmount, paymentFee, totalAmount int64
+			var currency string
+			var serialNumber sql.NullString
+			var paymentCode, paymentName string
+			var createdAt time.Time
 
 			err := rows.Scan(
-				&id, &invoiceNumber, &status, &paymentStatus,
+				&id, &invoiceNumber, &txStatus, &pStatus,
 				&productCode, &productName, &skuCode, &skuName,
-				&quantity, &subtotal, &discountAmount, &paymentFee, &totalAmount,
-				&currency, &serialNumber, &createdAt, &completedAtPtr,
+				&accountInputs, &accountNickname,
+				&quantity, &sellPrice, &discountAmount, &paymentFee, &totalAmount,
+				&currency, &serialNumber,
+				&paymentCode, &paymentName,
+				&createdAt,
 			)
 			if err != nil {
+				log.Error().Err(err).Msg("Failed to scan transaction row")
 				continue
 			}
 
-			if completedAtPtr != nil {
-				completedAt = *completedAtPtr
+			// Build account object
+			account := map[string]interface{}{}
+			if accountNickname.Valid && accountNickname.String != "" {
+				account["nickname"] = accountNickname.String
+			}
+			if accountInputs.Valid && accountInputs.String != "" {
+				account["inputs"] = parseAccountInputsToString(accountInputs.String)
 			}
 
 			transaction := map[string]interface{}{
-				"id":             id,
-				"invoiceNumber":  invoiceNumber,
-				"status":         status,
-				"paymentStatus":  paymentStatus,
-				"productCode":    productCode,
-				"productName":    productName,
-				"skuCode":        skuCode,
-				"skuName":        skuName,
-				"quantity":       quantity,
-				"subtotal":       subtotal,
-				"discountAmount": discountAmount,
-				"paymentFee":     paymentFee,
-				"total":          totalAmount,
-				"currency":       currency,
-				"createdAt":      createdAt.Format(time.RFC3339),
-			}
-
-			if serialNumber != "" {
-				transaction["serialNumber"] = serialNumber
-			}
-
-			if completedAtPtr != nil {
-				transaction["completedAt"] = completedAt.Format(time.RFC3339)
+				"invoiceNumber": invoiceNumber,
+				"product": map[string]interface{}{
+					"code": productCode,
+					"name": productName,
+				},
+				"sku": map[string]interface{}{
+					"code": skuCode,
+					"name": skuName,
+				},
+				"quantity": quantity,
+				"status": map[string]interface{}{
+					"transaction": txStatus,
+					"payment":     pStatus,
+				},
+				"account": account,
+				"pricing": map[string]interface{}{
+					"subtotal":   sellPrice,
+					"discount":   discountAmount,
+					"paymentFee": paymentFee,
+					"total":      totalAmount,
+					"currency":   currency,
+				},
+				"payment": map[string]interface{}{
+					"code": paymentCode,
+					"name": paymentName,
+				},
+				"createdAt": createdAt.Format(time.RFC3339),
 			}
 
 			transactions = append(transactions, transaction)
 		}
 
-		// Calculate total pages
-		totalPages := (totalTransactions + limit - 1) / limit
+		// Get total count with same filters as list query (but without limit/offset)
+		var totalRows int
+		countQuery := "SELECT COUNT(*) FROM transactions t " + whereClause
+		countArgs := []interface{}{userID}
+		countArgCount := 1
+
+		// Add region filter if exists
+		if userRegion != "" {
+			countArgCount++
+			countQuery += " AND t.region = $" + strconv.Itoa(countArgCount) + "::region_code"
+			countArgs = append(countArgs, userRegion)
+		}
+
+		// Add all filters
+		if status != "" && status != "ALL" {
+			countArgCount++
+			countQuery += " AND t.status = $" + strconv.Itoa(countArgCount) + "::transaction_status"
+			countArgs = append(countArgs, status)
+		}
+
+		if paymentStatus != "" {
+			countArgCount++
+			countQuery += " AND t.payment_status = $" + strconv.Itoa(countArgCount) + "::payment_status"
+			countArgs = append(countArgs, paymentStatus)
+		}
+
+		if search != "" {
+			countArgCount++
+			countQuery += " AND t.invoice_number ILIKE $" + strconv.Itoa(countArgCount)
+			countArgs = append(countArgs, "%"+search+"%")
+		}
+
+		if startDate != "" {
+			countArgCount++
+			countQuery += " AND t.created_at >= $" + strconv.Itoa(countArgCount) + "::timestamp"
+			countArgs = append(countArgs, startDate)
+		}
+
+		if endDate != "" {
+			countArgCount++
+			countQuery += " AND t.created_at <= $" + strconv.Itoa(countArgCount) + "::timestamp"
+			countArgs = append(countArgs, endDate+" 23:59:59")
+		}
+
+		err = deps.DB.Pool.QueryRow(ctx, countQuery, countArgs...).Scan(&totalRows)
+		if err != nil && err != pgx.ErrNoRows {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to count transactions")
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		// Calculate totalPages: (totalRows + limit - 1) / limit
+		// Examples: 30 rows, limit 10 = 3 pages; 5 rows, limit 10 = 1 page; 0 rows = 0 pages
+		totalPages := 0
+		if totalRows > 0 {
+			totalPages = (totalRows + limit - 1) / limit
+		}
 
 		utils.WriteSuccessJSON(w, map[string]interface{}{
 			"overview": map[string]interface{}{
-				"totalTransactions": totalTransactions,
-				"totalSpent":        totalSpent,
-				"successCount":      successCount,
-				"pendingCount":      pendingCount,
-				"failedCount":       failedCount,
+				"totalTransaction": totalTransactions,
+				"totalPurchase":    totalPurchase,
+				"success":          successCount,
+				"processing":       processingCount,
+				"pending":          pendingCount,
+				"failed":           failedCount,
 			},
 			"transactions": transactions,
 			"pagination": map[string]interface{}{
 				"limit":      limit,
 				"page":       page,
-				"totalRows":  totalTransactions,
+				"totalRows":  totalRows,
 				"totalPages": totalPages,
 			},
 		})
 	}
+}
+
+// parseAccountInputsToString converts account inputs JSON to readable string format
+func parseAccountInputsToString(inputs string) string {
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(inputs), &data); err != nil {
+		return inputs
+	}
+
+	// Try to format as "userId - zoneId" or just "userId"
+	userId, hasUserId := data["userId"]
+	zoneId, hasZoneId := data["zoneId"]
+	serverId, hasServerId := data["serverId"]
+
+	if hasUserId {
+		result := formatValue(userId)
+		if hasZoneId {
+			result += " - " + formatValue(zoneId)
+		} else if hasServerId {
+			result += " - " + formatValue(serverId)
+		}
+		return result
+	}
+
+	return inputs
+}
+
+func formatValue(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(val)
+	default:
+		return ""
+	}
+}
+
+func nullStringOrEmpty(ns sql.NullString) string {
+	if ns.Valid {
+		return ns.String
+	}
+	return ""
 }
 
 // handleGetMutationsImpl returns user's balance mutation history
@@ -215,21 +412,82 @@ func HandleGetMutationsImpl(deps *Dependencies) http.HandlerFunc {
 		}
 
 		mutationType := r.URL.Query().Get("type") // CREDIT or DEBIT
+		search := r.URL.Query().Get("search")     // invoice number
+		startDate := r.URL.Query().Get("startDate")
+		endDate := r.URL.Query().Get("endDate")
+		regionParam := r.URL.Query().Get("region")
 		offset := (page - 1) * limit
 
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 
-		// Get overview
+		// Get user's current region if region param not provided
+		var userRegion string
+		if regionParam == "" {
+			_ = deps.DB.Pool.QueryRow(ctx, `SELECT current_region FROM users WHERE id = $1`, userID).Scan(&userRegion)
+		} else {
+			userRegion = strings.ToUpper(regionParam)
+		}
+
+		// Get currency for region
+		var regionCurrency string
+		if userRegion != "" {
+			_ = deps.DB.Pool.QueryRow(ctx, `SELECT currency FROM regions WHERE code = $1`, userRegion).Scan(&regionCurrency)
+		}
+
+		// Build WHERE clause with all filters
+		whereClause := "WHERE m.user_id = $1"
+		args := []interface{}{userID}
+		argCount := 1
+
+		if regionCurrency != "" {
+			argCount++
+			whereClause += " AND m.currency = $" + strconv.Itoa(argCount)
+			args = append(args, regionCurrency)
+		}
+
+		// Build filter conditions for overview (same as list query)
+		overviewWhereClause := whereClause
+		overviewArgs := make([]interface{}, len(args))
+		copy(overviewArgs, args)
+		overviewArgCount := argCount
+
+		if mutationType != "" && mutationType != "ALL" {
+			overviewArgCount++
+			overviewWhereClause += " AND m.mutation_type = $" + strconv.Itoa(overviewArgCount)
+			overviewArgs = append(overviewArgs, mutationType)
+		}
+
+		if search != "" {
+			overviewArgCount++
+			overviewWhereClause += " AND m.invoice_number ILIKE $" + strconv.Itoa(overviewArgCount)
+			overviewArgs = append(overviewArgs, "%"+search+"%")
+		}
+
+		if startDate != "" {
+			overviewArgCount++
+			overviewWhereClause += " AND m.created_at >= $" + strconv.Itoa(overviewArgCount) + "::timestamp"
+			overviewArgs = append(overviewArgs, startDate)
+		}
+
+		if endDate != "" {
+			overviewArgCount++
+			overviewWhereClause += " AND m.created_at <= $" + strconv.Itoa(overviewArgCount) + "::timestamp"
+			overviewArgs = append(overviewArgs, endDate+" 23:59:59")
+		}
+
+		// Get overview (mutations table) with all filters applied
 		var totalCredit, totalDebit, netBalance int64
+		var transactionCount int
 		err := deps.DB.Pool.QueryRow(ctx, `
 			SELECT
-				COALESCE(SUM(CASE WHEN type = 'CREDIT' THEN amount ELSE 0 END), 0) as total_credit,
-				COALESCE(SUM(CASE WHEN type = 'DEBIT' THEN amount ELSE 0 END), 0) as total_debit,
-				COALESCE(SUM(CASE WHEN type = 'CREDIT' THEN amount ELSE -amount END), 0) as net_balance
-			FROM balance_mutations
-			WHERE user_id = $1 AND currency = 'IDR'
-		`, userID).Scan(&totalCredit, &totalDebit, &netBalance)
+				COALESCE(SUM(CASE WHEN mutation_type = 'CREDIT' THEN amount ELSE 0 END), 0) AS total_credit,
+				COALESCE(SUM(CASE WHEN mutation_type = 'DEBIT'  THEN amount ELSE 0 END), 0) AS total_debit,
+				COALESCE(SUM(CASE WHEN mutation_type = 'CREDIT' THEN amount ELSE -amount END), 0) AS net_balance,
+				COUNT(*) AS txn_count
+			FROM mutations m
+			`+overviewWhereClause+`
+		`, overviewArgs...).Scan(&totalCredit, &totalDebit, &netBalance, &transactionCount)
 
 		if err != nil && err != pgx.ErrNoRows {
 			utils.WriteInternalServerError(w)
@@ -239,22 +497,37 @@ func HandleGetMutationsImpl(deps *Dependencies) http.HandlerFunc {
 		// Build query for mutations list
 		query := `
 			SELECT
-				id, type, amount, balance_before, balance_after,
-				description, reference_type, reference_id, currency, created_at
-			FROM balance_mutations
-			WHERE user_id = $1
+				m.invoice_number, m.description, m.amount, m.mutation_type,
+				m.balance_before, m.balance_after, m.currency, m.created_at
+			FROM mutations m
+			` + whereClause + `
 		`
 
-		args := []interface{}{userID}
-		argCount := 1
-
-		if mutationType != "" {
+		if mutationType != "" && mutationType != "ALL" {
 			argCount++
-			query += " AND type = $" + strconv.Itoa(argCount)
+			query += " AND m.mutation_type = $" + strconv.Itoa(argCount)
 			args = append(args, mutationType)
 		}
 
-		query += " ORDER BY created_at DESC"
+		if search != "" {
+			argCount++
+			query += " AND m.invoice_number ILIKE $" + strconv.Itoa(argCount)
+			args = append(args, "%"+search+"%")
+		}
+
+		if startDate != "" {
+			argCount++
+			query += " AND m.created_at >= $" + strconv.Itoa(argCount) + "::timestamp"
+			args = append(args, startDate)
+		}
+
+		if endDate != "" {
+			argCount++
+			query += " AND m.created_at <= $" + strconv.Itoa(argCount) + "::timestamp"
+			args = append(args, endDate+" 23:59:59")
+		}
+
+		query += " ORDER BY m.created_at DESC"
 		argCount++
 		query += " LIMIT $" + strconv.Itoa(argCount)
 		args = append(args, limit)
@@ -272,49 +545,90 @@ func HandleGetMutationsImpl(deps *Dependencies) http.HandlerFunc {
 
 		mutations := []map[string]interface{}{}
 		for rows.Next() {
-			var id, mType, description, referenceType, referenceID, currency string
+			var invoiceNumber sql.NullString
+			var description sql.NullString
 			var amount, balanceBefore, balanceAfter int64
+			var mType, currency string
 			var createdAt time.Time
 
 			err := rows.Scan(
-				&id, &mType, &amount, &balanceBefore, &balanceAfter,
-				&description, &referenceType, &referenceID, &currency, &createdAt,
+				&invoiceNumber, &description, &amount, &mType,
+				&balanceBefore, &balanceAfter, &currency, &createdAt,
 			)
 			if err != nil {
 				continue
 			}
 
 			mutations = append(mutations, map[string]interface{}{
-				"id":            id,
-				"type":          mType,
+				"invoiceNumber": nullStringOrEmpty(invoiceNumber),
+				"description":   nullStringOrEmpty(description),
 				"amount":        amount,
+				"type":          mType,
 				"balanceBefore": balanceBefore,
 				"balanceAfter":  balanceAfter,
-				"description":   description,
-				"reference":     referenceID,
 				"currency":      currency,
 				"createdAt":     createdAt.Format(time.RFC3339),
 			})
 		}
 
-		// Get total count
+		// Get total count with same filters (but without limit/offset)
 		var totalRows int
-		countQuery := "SELECT COUNT(*) FROM balance_mutations WHERE user_id = $1"
+		countQuery := "SELECT COUNT(*) FROM mutations m " + whereClause
 		countArgs := []interface{}{userID}
+		countArgCount := 1
 
-		if mutationType != "" {
-			countQuery += " AND type = $2"
+		// Add currency filter if exists
+		if regionCurrency != "" {
+			countArgCount++
+			countQuery += " AND m.currency = $" + strconv.Itoa(countArgCount)
+			countArgs = append(countArgs, regionCurrency)
+		}
+
+		// Add all filters
+		if mutationType != "" && mutationType != "ALL" {
+			countArgCount++
+			countQuery += " AND m.mutation_type = $" + strconv.Itoa(countArgCount)
 			countArgs = append(countArgs, mutationType)
 		}
 
-		deps.DB.Pool.QueryRow(ctx, countQuery, countArgs...).Scan(&totalRows)
-		totalPages := (totalRows + limit - 1) / limit
+		if search != "" {
+			countArgCount++
+			countQuery += " AND m.invoice_number ILIKE $" + strconv.Itoa(countArgCount)
+			countArgs = append(countArgs, "%"+search+"%")
+		}
+
+		if startDate != "" {
+			countArgCount++
+			countQuery += " AND m.created_at >= $" + strconv.Itoa(countArgCount) + "::timestamp"
+			countArgs = append(countArgs, startDate)
+		}
+
+		if endDate != "" {
+			countArgCount++
+			countQuery += " AND m.created_at <= $" + strconv.Itoa(countArgCount) + "::timestamp"
+			countArgs = append(countArgs, endDate+" 23:59:59")
+		}
+
+		err = deps.DB.Pool.QueryRow(ctx, countQuery, countArgs...).Scan(&totalRows)
+		if err != nil && err != pgx.ErrNoRows {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to count mutations")
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		// Calculate totalPages: (totalRows + limit - 1) / limit
+		// Examples: 30 rows, limit 10 = 3 pages; 5 rows, limit 10 = 1 page; 0 rows = 0 pages
+		totalPages := 0
+		if totalRows > 0 {
+			totalPages = (totalRows + limit - 1) / limit
+		}
 
 		utils.WriteSuccessJSON(w, map[string]interface{}{
 			"overview": map[string]interface{}{
-				"totalCredit": totalCredit,
-				"totalDebit":  totalDebit,
-				"netBalance":  netBalance,
+				"totalDebit":       totalDebit,
+				"totalCredit":      totalCredit,
+				"netBalance":       netBalance,
+				"transactionCount": transactionCount,
 			},
 			"mutations": mutations,
 			"pagination": map[string]interface{}{
@@ -327,7 +641,7 @@ func HandleGetMutationsImpl(deps *Dependencies) http.HandlerFunc {
 	}
 }
 
-// handleGetReportsImpl returns user's spending analytics
+// handleGetReportsImpl returns user's daily transaction reports
 func HandleGetReportsImpl(deps *Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.GetUserIDFromContext(r.Context())
@@ -336,133 +650,210 @@ func HandleGetReportsImpl(deps *Dependencies) http.HandlerFunc {
 			return
 		}
 
-		period := r.URL.Query().Get("period") // daily, weekly, monthly, yearly
-		if period == "" {
-			period = "monthly"
+		// Parse query parameters
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		if limit <= 0 || limit > 100 {
+			limit = 10
 		}
+
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page <= 0 {
+			page = 1
+		}
+
+		startDate := r.URL.Query().Get("startDate")
+		endDate := r.URL.Query().Get("endDate")
+		regionParam := r.URL.Query().Get("region")
+
+		offset := (page - 1) * limit
 
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 
-		// Get overview
-		var totalSpent, totalTransactions int64
-		var avgPerTransaction float64
+		// Get user's current region if region param not provided
+		var userRegion string
+		if regionParam == "" {
+			_ = deps.DB.Pool.QueryRow(ctx, `SELECT current_region FROM users WHERE id = $1`, userID).Scan(&userRegion)
+		} else {
+			userRegion = strings.ToUpper(regionParam)
+		}
 
-		err := deps.DB.Pool.QueryRow(ctx, `
+		// Get user currency from region
+		currency := getCurrencyByRegion(userRegion)
+
+		// Build WHERE clause for date and region filters
+		whereClause := "WHERE t.user_id = $1 AND t.status = 'SUCCESS'::transaction_status"
+		args := []interface{}{userID}
+		argCount := 1
+
+		if userRegion != "" {
+			argCount++
+			whereClause += " AND t.region = $" + strconv.Itoa(argCount) + "::region_code"
+			args = append(args, userRegion)
+		}
+
+		if startDate != "" {
+			argCount++
+			whereClause += " AND DATE(t.created_at) >= $" + strconv.Itoa(argCount)
+			args = append(args, startDate)
+		}
+
+		if endDate != "" {
+			argCount++
+			whereClause += " AND DATE(t.created_at) <= $" + strconv.Itoa(argCount)
+			args = append(args, endDate)
+		}
+
+		// Get overview stats
+		var totalDays, totalTransactions int
+		var totalAmount int64
+		var avgPerDay float64
+		var highestDate, lowestDate sql.NullString
+		var highestAmount, lowestAmount sql.NullInt64
+
+		// Get overview stats - split into two queries for clarity
+		overviewQuery := `
+			WITH daily_stats AS (
+				SELECT
+					DATE(t.created_at)::text as date,
+					COUNT(*) as tx_count,
+					SUM(t.total_amount) as amount
+				FROM transactions t
+				` + whereClause + `
+				GROUP BY DATE(t.created_at)
+			)
 			SELECT
-				COALESCE(SUM(total_amount), 0) as total_spent,
-				COUNT(*) as total_transactions,
-				COALESCE(AVG(total_amount), 0) as avg_per_transaction
-			FROM transactions
-			WHERE user_id = $1 AND status = 'SUCCESS'
-		`, userID).Scan(&totalSpent, &totalTransactions, &avgPerTransaction)
-
+				COUNT(DISTINCT date) as total_days,
+				COALESCE(SUM(tx_count), 0) as total_transactions,
+				COALESCE(SUM(amount), 0) as total_amount,
+				COALESCE(AVG(amount), 0) as avg_per_day
+			FROM daily_stats
+		`
+		err := deps.DB.Pool.QueryRow(ctx, overviewQuery, args...).Scan(&totalDays, &totalTransactions, &totalAmount, &avgPerDay)
 		if err != nil && err != pgx.ErrNoRows {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to get reports overview")
 			utils.WriteInternalServerError(w)
 			return
 		}
 
-		// Get spending by product
-		byProductRows, _ := deps.DB.Pool.Query(ctx, `
+		// Get highest and lowest day separately
+		highestQuery := `
 			SELECT
-				p.code, p.title,
-				COUNT(*) as transaction_count,
-				SUM(t.total_amount) as total_spent
+				DATE(t.created_at)::text as date,
+				SUM(t.total_amount) as amount
 			FROM transactions t
-			JOIN products p ON t.product_id = p.id
-			WHERE t.user_id = $1 AND t.status = 'SUCCESS'
-			GROUP BY p.code, p.title
-			ORDER BY total_spent DESC
-			LIMIT 10
-		`, userID)
+			` + whereClause + `
+			GROUP BY DATE(t.created_at)
+			ORDER BY amount DESC
+			LIMIT 1
+		`
+		_ = deps.DB.Pool.QueryRow(ctx, highestQuery, args...).Scan(&highestDate, &highestAmount)
 
-		byProduct := []map[string]interface{}{}
-		if byProductRows != nil {
-			defer byProductRows.Close()
-			for byProductRows.Next() {
-				var code, title string
-				var count int
-				var spent int64
-				byProductRows.Scan(&code, &title, &count, &spent)
-				byProduct = append(byProduct, map[string]interface{}{
-					"product":     title,
-					"productCode": code,
-					"count":       count,
-					"spent":       spent,
-				})
-			}
+		lowestQuery := `
+			SELECT
+				DATE(t.created_at)::text as date,
+				SUM(t.total_amount) as amount
+			FROM transactions t
+			` + whereClause + `
+			GROUP BY DATE(t.created_at)
+			HAVING SUM(t.total_amount) > 0
+			ORDER BY amount ASC
+			LIMIT 1
+		`
+		_ = deps.DB.Pool.QueryRow(ctx, lowestQuery, args...).Scan(&lowestDate, &lowestAmount)
+
+		// Build highestDay and lowestDay
+		highestDay := map[string]interface{}{}
+		if highestDate.Valid && highestAmount.Valid {
+			highestDay["date"] = highestDate.String
+			highestDay["amount"] = highestAmount.Int64
 		}
 
-		// Get spending by month (last 12 months)
-		byMonthRows, _ := deps.DB.Pool.Query(ctx, `
-			SELECT
-				TO_CHAR(created_at, 'YYYY-MM') as month,
-				COUNT(*) as transaction_count,
-				SUM(total_amount) as total_spent
-			FROM transactions
-			WHERE user_id = $1 AND status = 'SUCCESS'
-			AND created_at >= CURRENT_DATE - INTERVAL '12 months'
-			GROUP BY TO_CHAR(created_at, 'YYYY-MM')
-			ORDER BY month DESC
-			LIMIT 12
-		`, userID)
-
-		byMonth := []map[string]interface{}{}
-		if byMonthRows != nil {
-			defer byMonthRows.Close()
-			for byMonthRows.Next() {
-				var month string
-				var count int
-				var spent int64
-				byMonthRows.Scan(&month, &count, &spent)
-				byMonth = append(byMonth, map[string]interface{}{
-					"month": month,
-					"count": count,
-					"spent": spent,
-				})
-			}
+		lowestDay := map[string]interface{}{}
+		if lowestDate.Valid && lowestAmount.Valid {
+			lowestDay["date"] = lowestDate.String
+			lowestDay["amount"] = lowestAmount.Int64
 		}
 
-		// Get spending by payment method
-		byPaymentRows, _ := deps.DB.Pool.Query(ctx, `
+		// Get daily reports with pagination
+		query := `
 			SELECT
-				pc.code, pc.name,
-				COUNT(*) as transaction_count,
-				SUM(t.total_amount) as total_spent
+				DATE(t.created_at) as date,
+				COUNT(*) as total_transactions,
+				SUM(t.total_amount) as total_amount
 			FROM transactions t
-			JOIN payment_channels pc ON t.payment_channel_id = pc.id
-			WHERE t.user_id = $1 AND t.status = 'SUCCESS'
-			GROUP BY pc.code, pc.name
-			ORDER BY total_spent DESC
-			LIMIT 10
-		`, userID)
+			` + whereClause + `
+			GROUP BY DATE(t.created_at)
+			ORDER BY date DESC
+			LIMIT $` + strconv.Itoa(argCount+1) + `
+			OFFSET $` + strconv.Itoa(argCount+2) + `
+		`
+		queryArgs := append(args, limit, offset)
 
-		byPaymentMethod := []map[string]interface{}{}
-		if byPaymentRows != nil {
-			defer byPaymentRows.Close()
-			for byPaymentRows.Next() {
-				var code, name string
-				var count int
-				var spent int64
-				byPaymentRows.Scan(&code, &name, &count, &spent)
-				byPaymentMethod = append(byPaymentMethod, map[string]interface{}{
-					"payment": name,
-					"code":    code,
-					"count":   count,
-					"spent":   spent,
-				})
+		rows, err := deps.DB.Pool.Query(ctx, query, queryArgs...)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to query daily reports")
+			utils.WriteInternalServerError(w)
+			return
+		}
+		defer rows.Close()
+
+		reports := []map[string]interface{}{}
+		for rows.Next() {
+			var date time.Time
+			var txCount int
+			var amount int64
+
+			err := rows.Scan(&date, &txCount, &amount)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to scan report row")
+				continue
 			}
+
+			reports = append(reports, map[string]interface{}{
+				"date":              date.Format("2006-01-02"),
+				"totalTransactions": txCount,
+				"totalAmount":       amount,
+				"currency":          currency,
+			})
+		}
+
+		// Get total count of distinct days
+		var totalRows int
+		countQuery := `
+			SELECT COUNT(DISTINCT DATE(t.created_at))
+			FROM transactions t
+			` + whereClause
+		err = deps.DB.Pool.QueryRow(ctx, countQuery, args...).Scan(&totalRows)
+		if err != nil && err != pgx.ErrNoRows {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to count report days")
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		// Calculate totalPages: (totalRows + limit - 1) / limit
+		// Examples: 30 rows, limit 10 = 3 pages; 5 rows, limit 10 = 1 page; 0 rows = 0 pages
+		totalPages := 0
+		if totalRows > 0 {
+			totalPages = (totalRows + limit - 1) / limit
 		}
 
 		utils.WriteSuccessJSON(w, map[string]interface{}{
 			"overview": map[string]interface{}{
-				"totalSpent":            totalSpent,
-				"totalTransactions":     totalTransactions,
-				"averagePerTransaction": avgPerTransaction,
+				"totalDays":         totalDays,
+				"totalTransactions": totalTransactions,
+				"totalAmount":       totalAmount,
+				"averagePerDay":     avgPerDay,
+				"highestDay":        highestDay,
+				"lowestDay":         lowestDay,
 			},
-			"byProduct":       byProduct,
-			"byMonth":         byMonth,
-			"byPaymentMethod": byPaymentMethod,
+			"reports": reports,
+			"pagination": map[string]interface{}{
+				"limit":      limit,
+				"page":       page,
+				"totalRows":  totalRows,
+				"totalPages": totalPages,
+			},
 		})
 	}
 }
@@ -488,27 +879,70 @@ func HandleGetDepositsImpl(deps *Dependencies) http.HandlerFunc {
 		}
 
 		status := r.URL.Query().Get("status")
+		startDate := r.URL.Query().Get("startDate")
+		endDate := r.URL.Query().Get("endDate")
+		regionParam := r.URL.Query().Get("region")
 		offset := (page - 1) * limit
 
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 
-		// Get overview
+		// Get user's current region if region param not provided
+		var userRegion string
+		if regionParam == "" {
+			_ = deps.DB.Pool.QueryRow(ctx, `SELECT current_region FROM users WHERE id = $1`, userID).Scan(&userRegion)
+		} else {
+			userRegion = strings.ToUpper(regionParam)
+		}
+
+		// Build WHERE clause with filters
+		whereClause := "WHERE d.user_id = $1"
+		args := []interface{}{userID}
+		argCount := 1
+
+		// Add region filter (deposits table has region column)
+		if userRegion != "" {
+			argCount++
+			whereClause += " AND d.region = $" + strconv.Itoa(argCount) + "::region_code"
+			args = append(args, userRegion)
+		}
+
+		if status != "" {
+			argCount++
+			whereClause += " AND d.status = $" + strconv.Itoa(argCount)
+			args = append(args, status)
+		}
+
+		if startDate != "" {
+			argCount++
+			whereClause += " AND d.created_at >= $" + strconv.Itoa(argCount) + "::timestamp"
+			args = append(args, startDate)
+		}
+
+		if endDate != "" {
+			argCount++
+			whereClause += " AND d.created_at <= $" + strconv.Itoa(argCount) + "::timestamp"
+			args = append(args, endDate+" 23:59:59")
+		}
+
+		// Get overview with filters
 		var totalDeposits, successCount, pendingCount, failedCount int
 		var totalAmount int64
 
-		err := deps.DB.Pool.QueryRow(ctx, `
+		overviewQuery := `
 			SELECT
 				COUNT(*) as total,
 				COALESCE(SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END), 0) as success,
 				COALESCE(SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END), 0) as pending,
-				COALESCE(SUM(CASE WHEN status IN ('FAILED', 'EXPIRED', 'CANCELLED') THEN 1 ELSE 0 END), 0) as failed,
+				COALESCE(SUM(CASE WHEN status IN ('FAILED', 'EXPIRED') THEN 1 ELSE 0 END), 0) as failed,
 				COALESCE(SUM(CASE WHEN status = 'SUCCESS' THEN amount ELSE 0 END), 0) as total_amount
-			FROM deposits
-			WHERE user_id = $1
-		`, userID).Scan(&totalDeposits, &successCount, &pendingCount, &failedCount, &totalAmount)
+			FROM deposits d
+			` + whereClause
+
+		err := deps.DB.Pool.QueryRow(ctx, overviewQuery, args...).Scan(&totalDeposits, &successCount, &pendingCount, &failedCount, &totalAmount)
 
 		if err != nil && err != pgx.ErrNoRows {
+			log.Error().Err(err).Str("endpoint", "/v2/deposits").Msg("Failed to get deposit overview")
 			utils.WriteInternalServerError(w)
 			return
 		}
@@ -521,17 +955,7 @@ func HandleGetDepositsImpl(deps *Dependencies) http.HandlerFunc {
 				d.created_at, d.paid_at, d.expired_at
 			FROM deposits d
 			JOIN payment_channels pc ON d.payment_channel_id = pc.id
-			WHERE d.user_id = $1
-		`
-
-		args := []interface{}{userID}
-		argCount := 1
-
-		if status != "" {
-			argCount++
-			query += " AND d.status = $" + strconv.Itoa(argCount)
-			args = append(args, status)
-		}
+			` + whereClause
 
 		query += " ORDER BY d.created_at DESC"
 		argCount++
@@ -541,6 +965,35 @@ func HandleGetDepositsImpl(deps *Dependencies) http.HandlerFunc {
 		argCount++
 		query += " OFFSET $" + strconv.Itoa(argCount)
 		args = append(args, offset)
+
+		// Reset argCount for count query (same filters)
+		countArgCount := 1
+		countArgs := []interface{}{userID}
+		countWhereClause := "WHERE d.user_id = $1"
+
+		if userRegion != "" {
+			countArgCount++
+			countWhereClause += " AND d.region = $" + strconv.Itoa(countArgCount) + "::region_code"
+			countArgs = append(countArgs, userRegion)
+		}
+
+		if status != "" {
+			countArgCount++
+			countWhereClause += " AND d.status = $" + strconv.Itoa(countArgCount)
+			countArgs = append(countArgs, status)
+		}
+
+		if startDate != "" {
+			countArgCount++
+			countWhereClause += " AND d.created_at >= $" + strconv.Itoa(countArgCount) + "::timestamp"
+			countArgs = append(countArgs, startDate)
+		}
+
+		if endDate != "" {
+			countArgCount++
+			countWhereClause += " AND d.created_at <= $" + strconv.Itoa(countArgCount) + "::timestamp"
+			countArgs = append(countArgs, endDate+" 23:59:59")
+		}
 
 		rows, err := deps.DB.Pool.Query(ctx, query, args...)
 		if err != nil {
@@ -588,18 +1041,22 @@ func HandleGetDepositsImpl(deps *Dependencies) http.HandlerFunc {
 			deposits = append(deposits, deposit)
 		}
 
-		// Get total count
+		// Get total count with same filters
 		var totalRows int
-		countQuery := "SELECT COUNT(*) FROM deposits WHERE user_id = $1"
-		countArgs := []interface{}{userID}
-
-		if status != "" {
-			countQuery += " AND status = $2"
-			countArgs = append(countArgs, status)
+		countQuery := "SELECT COUNT(*) FROM deposits d " + countWhereClause
+		err = deps.DB.Pool.QueryRow(ctx, countQuery, countArgs...).Scan(&totalRows)
+		if err != nil && err != pgx.ErrNoRows {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to count deposits")
+			utils.WriteInternalServerError(w)
+			return
 		}
 
-		deps.DB.Pool.QueryRow(ctx, countQuery, countArgs...).Scan(&totalRows)
-		totalPages := (totalRows + limit - 1) / limit
+		// Calculate totalPages: (totalRows + limit - 1) / limit
+		// Examples: 30 rows, limit 10 = 3 pages; 5 rows, limit 10 = 1 page; 0 rows = 0 pages
+		totalPages := 0
+		if totalRows > 0 {
+			totalPages = (totalRows + limit - 1) / limit
+		}
 
 		utils.WriteSuccessJSON(w, map[string]interface{}{
 			"overview": map[string]interface{}{
@@ -654,6 +1111,23 @@ func HandleDepositInquiryImpl(deps *Dependencies) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
+		// Get region from context or query param
+		region := middleware.GetRegionFromContext(r.Context())
+		if region == "" {
+			region = r.URL.Query().Get("region")
+			if region == "" {
+				region = "ID" // Default
+			}
+		}
+		region = strings.ToUpper(region)
+
+		// Get currency from region
+		var currency string
+		_ = deps.DB.Pool.QueryRow(ctx, `SELECT currency FROM regions WHERE code = $1`, region).Scan(&currency)
+		if currency == "" {
+			currency = "IDR" // Default
+		}
+
 		// Get payment channel info
 		var paymentChannelID, paymentChannelName string
 		var feeAmount, feePercentage int
@@ -699,26 +1173,58 @@ func HandleDepositInquiryImpl(deps *Dependencies) http.HandlerFunc {
 
 		total := req.Amount + paymentFee
 
-		utils.WriteSuccessJSON(w, map[string]interface{}{
+		// Generate validation token using JWT
+		tokenData := map[string]interface{}{
 			"amount":      req.Amount,
-			"paymentFee":  paymentFee,
-			"total":       total,
-			"currency":    req.Currency,
 			"paymentCode": req.PaymentCode,
-			"paymentName": paymentChannelName,
-			"limits": map[string]interface{}{
-				"minAmount": minAmount,
-				"maxAmount": maxAmount,
+			"region":      region,
+			"currency":    currency,
+			"pricing": map[string]interface{}{
+				"subtotal":   req.Amount,
+				"paymentFee": paymentFee,
+				"total":      total,
 			},
-		})
+		}
+
+		validationToken, err := deps.JWTService.GenerateValidationToken(tokenData)
+		if err != nil {
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		expiresAt := time.Now().Add(5 * time.Minute)
+
+		// Build response - same structure as order inquiry
+		response := map[string]interface{}{
+			"validationToken": validationToken,
+			"expiresAt":       expiresAt.Format(time.RFC3339),
+			"deposit": map[string]interface{}{
+				"amount": float64(req.Amount),
+				"pricing": map[string]interface{}{
+					"subtotal":   float64(req.Amount),
+					"paymentFee": float64(paymentFee),
+					"total":      float64(total),
+					"currency":   currency,
+				},
+				"payment": map[string]interface{}{
+					"code":          req.PaymentCode,
+					"name":          paymentChannelName,
+					"currency":      currency,
+					"minAmount":     float64(minAmount),
+					"maxAmount":     float64(maxAmount),
+					"feeAmount":     float64(feeAmount),
+					"feePercentage": float64(feePercentage),
+				},
+			},
+		}
+
+		utils.WriteSuccessJSON(w, response)
 	}
 }
 
 // CreateDepositRequest represents the request body for creating deposit
 type CreateDepositRequest struct {
-	Amount      int64  `json:"amount" validate:"required,gt=0"`
-	Currency    string `json:"currency" validate:"required"`
-	PaymentCode string `json:"paymentCode" validate:"required"`
+	ValidationToken string `json:"validationToken" validate:"required"`
 }
 
 // handleCreateDepositImpl creates a new deposit/top-up request
@@ -736,129 +1242,509 @@ func HandleCreateDepositImpl(deps *Dependencies) http.HandlerFunc {
 			return
 		}
 
-		// Validate
-		if req.Amount <= 0 {
+		if req.ValidationToken == "" {
 			utils.WriteValidationErrorJSON(w, "Validation failed", map[string]string{
-				"amount": "Amount must be greater than 0",
+				"validationToken": "Validation token is required",
 			})
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
-		// Get payment channel
-		var paymentChannelID, paymentChannelName, instruction string
-		var feeAmount, feePercentage int
-		var minAmount, maxAmount int64
-		var gatewayID *string
-
-		err := deps.DB.Pool.QueryRow(ctx, `
-			SELECT
-				pc.id, pc.name, pc.instruction,
-				pc.fee_amount, pc.fee_percentage,
-				pc.min_amount, pc.max_amount,
-				pcg.gateway_id
-			FROM payment_channels pc
-			LEFT JOIN payment_channel_gateway_assignment pcg
-				ON pc.id = pcg.payment_channel_id AND pcg.transaction_type = 'deposit'
-			WHERE pc.code = $1 AND pc.is_active = true
-		`, req.PaymentCode).Scan(
-			&paymentChannelID, &paymentChannelName, &instruction,
-			&feeAmount, &feePercentage, &minAmount, &maxAmount,
-			&gatewayID,
-		)
-
+		// Validate and decode validation token
+		tokenData, err := deps.JWTService.ValidateValidationToken(req.ValidationToken)
 		if err != nil {
-			if err == pgx.ErrNoRows {
-				utils.WriteErrorJSON(w, http.StatusNotFound, "PAYMENT_NOT_FOUND",
-					"Payment method not found", "")
-				return
+			log.Error().
+				Err(err).
+				Str("endpoint", "/v2/deposits").
+				Str("error_type", "INVALID_TOKEN").
+				Msg("Failed to validate validation token")
+			utils.WriteErrorJSON(w, http.StatusBadRequest, "INVALID_TOKEN",
+				"Invalid or expired validation token", "Please create a new deposit inquiry")
+			return
+		}
+
+		// Check if token was already used (via Redis)
+		tokenKey := deps.Redis.ValidationTokenKey(req.ValidationToken)
+		exists, err := deps.Redis.Client.Exists(ctx, tokenKey).Result()
+		if err != nil {
+			log.Error().
+				Err(err).
+				Str("endpoint", "/v2/deposits").
+				Str("error_type", "REDIS_ERROR").
+				Str("token_key", tokenKey).
+				Msg("Failed to check token usage in Redis")
+		}
+		if err == nil && exists > 0 {
+			log.Warn().
+				Str("endpoint", "/v2/deposits").
+				Str("error_type", "TOKEN_ALREADY_USED").
+				Str("token_key", tokenKey).
+				Msg("Validation token has already been used")
+			utils.WriteErrorJSON(w, http.StatusBadRequest, "TOKEN_ALREADY_USED",
+				"Validation token has already been used", "Please create a new deposit inquiry")
+			return
+		}
+
+		// Extract deposit data from token
+		amount := int64(tokenData["amount"].(float64))
+		paymentCode, _ := tokenData["paymentCode"].(string)
+		region, _ := tokenData["region"].(string)
+		currency, _ := tokenData["currency"].(string)
+		pricingData, _ := tokenData["pricing"].(map[string]interface{})
+		paymentFee := int64(pricingData["paymentFee"].(float64))
+		totalAmount := int64(pricingData["total"].(float64))
+
+		// Mark token as used in Redis (expires in 1 hour)
+		_ = deps.Redis.Client.Set(ctx, tokenKey, "used", time.Hour)
+
+		// Get region from context if not in token
+		if region == "" {
+			region = middleware.GetRegionFromContext(r.Context())
+			if region == "" {
+				region = "ID" // Default
 			}
+		}
+
+		// Start database transaction
+		tx, err := deps.DB.Pool.Begin(ctx)
+		if err != nil {
+			log.Error().
+				Err(err).
+				Str("endpoint", "/v2/deposits").
+				Str("error_type", "DB_TRANSACTION_ERROR").
+				Msg("Failed to begin database transaction")
 			utils.WriteInternalServerError(w)
 			return
 		}
+		defer tx.Rollback(ctx)
 
-		// Validate limits
-		if req.Amount < minAmount {
-			utils.WriteErrorJSON(w, http.StatusBadRequest, "AMOUNT_TOO_LOW",
-				"Amount below minimum", "")
+		// Get payment channel details
+		var paymentChannelID string
+		var paymentName, paymentInstruction string
+		var feeAmount, feePercentage float64
+		err = tx.QueryRow(ctx, `
+			SELECT pc.id, pc.name, pc.instruction, pc.fee_amount, pc.fee_percentage
+			FROM payment_channels pc
+			WHERE pc.code = $1 AND pc.is_active = true
+			LIMIT 1
+		`, paymentCode).Scan(&paymentChannelID, &paymentName, &paymentInstruction, &feeAmount, &feePercentage)
+
+		if err != nil {
+			log.Error().
+				Err(err).
+				Str("endpoint", "/v2/deposits").
+				Str("error_type", "PAYMENT_CHANNEL_NOT_FOUND").
+				Str("payment_code", paymentCode).
+				Bool("is_no_rows", err == pgx.ErrNoRows).
+				Msg("Failed to fetch payment channel from database")
+			utils.WriteErrorJSON(w, http.StatusNotFound, "PAYMENT_CHANNEL_NOT_FOUND",
+				"Payment channel not found", "")
 			return
 		}
-
-		if maxAmount > 0 && req.Amount > maxAmount {
-			utils.WriteErrorJSON(w, http.StatusBadRequest, "AMOUNT_TOO_HIGH",
-				"Amount exceeds maximum", "")
-			return
-		}
-
-		// Calculate fee
-		paymentFee := int64(feeAmount)
-		if feePercentage > 0 {
-			paymentFee += (req.Amount * int64(feePercentage)) / 100
-		}
-		total := req.Amount + paymentFee
 
 		// Generate invoice number
 		invoiceNumber := utils.GenerateDepositInvoiceNumber()
 
-		// Set expiry (1 hour for e-wallet, 24 hours for VA/QRIS)
-		expiryDuration := 1 * time.Hour
-		if req.PaymentCode == "BCA_VA" || req.PaymentCode == "BRI_VA" || req.PaymentCode == "QRIS" {
-			expiryDuration = 24 * time.Hour
+		// Set expiry time based on payment type
+		var expiredAt time.Time
+		if paymentCode == "QRIS" {
+			// QRIS expires in 30 minutes
+			expiredAt = time.Now().Add(30 * time.Minute)
+		} else if strings.HasSuffix(paymentCode, "_VA") {
+			// VA expires in 24 hours
+			expiredAt = time.Now().Add(24 * time.Hour)
+		} else {
+			// E-wallet expires in 1 hour
+			expiredAt = time.Now().Add(1 * time.Hour)
 		}
-		expiredAt := time.Now().Add(expiryDuration)
+
+		// Get IP address and user agent
+		ipAddress := extractIPAddress(r)
+		userAgent := r.UserAgent()
+
+		// Determine gateway based on payment channel code
+		gatewayName := getGatewayForChannel(paymentCode)
+
+		// Get gateway ID if gateway name is available
+		var gatewayID *string
+		if gatewayName != "" {
+			var gID string
+			err = tx.QueryRow(ctx, `SELECT id FROM payment_gateways WHERE code = $1`, gatewayName).Scan(&gID)
+			if err == nil {
+				gatewayID = &gID
+			}
+		}
 
 		// Insert deposit record
 		var depositID string
-		err = deps.DB.Pool.QueryRow(ctx, `
+		err = tx.QueryRow(ctx, `
 			INSERT INTO deposits (
 				invoice_number, user_id, payment_channel_id, payment_gateway_id,
-				amount, payment_fee, total_amount, currency, status,
-				created_at, expired_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+				amount, payment_fee, total_amount, currency, status, region,
+				ip_address, user_agent, created_at, expired_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), $13)
 			RETURNING id
 		`, invoiceNumber, userID, paymentChannelID, gatewayID,
-			req.Amount, paymentFee, total, req.Currency, "PENDING",
-			time.Now(), expiredAt,
+			amount, paymentFee, totalAmount, currency, "PENDING", region,
+			ipAddress, userAgent, expiredAt,
 		).Scan(&depositID)
 
 		if err != nil {
+			log.Error().
+				Err(err).
+				Str("endpoint", "/v2/deposits").
+				Str("error_type", "DEPOSIT_INSERT_ERROR").
+				Msg("Failed to insert deposit")
 			utils.WriteInternalServerError(w)
 			return
 		}
 
-		// TODO: Call payment gateway to generate payment data
-		// For now, return mock payment data
-		paymentData := map[string]interface{}{
-			"code":        req.PaymentCode,
-			"name":        paymentChannelName,
-			"instruction": instruction,
-			"expiredAt":   expiredAt.Format(time.RFC3339),
+		// Create initial timeline entry: Deposit created
+		_, err = tx.Exec(ctx, `
+			INSERT INTO deposit_logs (deposit_id, status, message, created_at)
+			VALUES ($1, $2, $3, NOW())
+		`, depositID, "PENDING", "Deposit created, waiting for payment")
+
+		if err != nil {
+			log.Warn().
+				Err(err).
+				Str("endpoint", "/v2/deposits").
+				Str("error_type", "DEPOSIT_LOG_INSERT_ERROR").
+				Str("deposit_id", depositID).
+				Msg("Failed to insert deposit timeline (non-fatal)")
 		}
 
-		// Mock payment data based on payment type
-		if req.PaymentCode == "QRIS" {
-			paymentData["qrCode"] = "00020101021126660016ID.CO.QRIS.WWW..."
-			paymentData["qrCodeImage"] = "https://nos.jkt-1.neo.id/gate/qr/" + invoiceNumber + ".png"
-		} else if req.PaymentCode == "BCA_VA" || req.PaymentCode == "BRI_VA" {
-			paymentData["accountNumber"] = "80777" + invoiceNumber[3:18]
-			paymentData["accountName"] = "Seaply Indonesia"
+		// Integrate with payment gateway (similar to create order)
+		var paymentData map[string]interface{}
+		var gatewayRefID *string
+
+		// For BALANCE payment, skip gateway call
+		if paymentCode != "BALANCE" {
+			// Check if payment manager is available
+			if deps.PaymentManager == nil {
+				log.Error().
+					Str("endpoint", "/v2/deposits").
+					Str("payment_code", paymentCode).
+					Msg("Payment manager not configured")
+				tx.Rollback(ctx)
+				utils.WriteErrorJSON(w, http.StatusServiceUnavailable, "PAYMENT_GATEWAY_UNAVAILABLE",
+					"Payment gateway is not available", "Please try again later or use a different payment method")
+				return
+			}
+
+			// Build description for payment
+			paymentDesc := fmt.Sprintf("Deposit/Top-up %s", currency)
+
+			// Build return URL with locale (default to id-id)
+			locale := "id-id"
+			if region == "MY" {
+				locale = "en-my"
+			} else if region == "PH" {
+				locale = "en-ph"
+			} else if region == "SG" {
+				locale = "en-sg"
+			} else if region == "TH" {
+				locale = "en-th"
+			}
+			frontendInvoiceURL := fmt.Sprintf("%s/%s/deposit/%s", deps.Config.App.FrontendBaseURL, locale, invoiceNumber)
+
+			// Determine callback URL based on gateway
+			callbackURL := deps.Config.App.BaseURL + "/v2/webhooks/payment"
+			if gatewayName == "DANA_DIRECT" {
+				callbackURL = deps.Config.App.BaseURL + "/v2/webhooks/dana"
+			} else if gatewayName == "MIDTRANS" {
+				callbackURL = deps.Config.App.BaseURL + "/v2/webhooks/midtrans"
+			} else if gatewayName == "XENDIT" {
+				callbackURL = deps.Config.App.BaseURL + "/v2/webhooks/xendit"
+			} else if gatewayName == "PAKAILINK" {
+				callbackURL = deps.Config.App.BaseURL + "/webhooks/pakailink"
+			}
+
+			// Create payment request
+			paymentReq := &payment.PaymentRequest{
+				RefID:          invoiceNumber,
+				Amount:         float64(totalAmount),
+				Currency:       currency,
+				Channel:        paymentCode,
+				GatewayName:    gatewayName,
+				GatewayCode:    paymentCode,
+				Description:    paymentDesc,
+				CustomerName:   "",
+				CustomerEmail:  "",
+				CustomerPhone:  "",
+				ExpiryDuration: time.Until(expiredAt),
+				CallbackURL:    callbackURL,
+				SuccessURL:     frontendInvoiceURL,
+				FailureURL:     frontendInvoiceURL,
+				Metadata: map[string]string{
+					"deposit_id": depositID,
+					"type":       "deposit",
+					"user_id":    userID,
+					"sku_code":   invoiceNumber, // Use invoice number as sku_code for Midtrans item_details.id
+				},
+			}
+
+			log.Info().
+				Str("endpoint", "/v2/deposits").
+				Str("ref_id", invoiceNumber).
+				Str("channel", paymentCode).
+				Str("gateway_name", gatewayName).
+				Float64("amount", paymentReq.Amount).
+				Str("callback_url", paymentReq.CallbackURL).
+				Msg("Calling payment gateway for deposit")
+
+			// Create payment via gateway
+			paymentResult, paymentErr := deps.PaymentManager.CreatePayment(ctx, paymentReq)
+			if paymentErr != nil {
+				log.Error().
+					Err(paymentErr).
+					Str("endpoint", "/v2/deposits").
+					Str("payment_code", paymentCode).
+					Str("invoice_number", invoiceNumber).
+					Msg("Payment gateway call failed")
+				tx.Rollback(ctx)
+				utils.WriteErrorJSON(w, http.StatusBadGateway, "PAYMENT_GATEWAY_ERROR",
+					"Failed to create payment", paymentErr.Error())
+				return
+			}
+
+			// Successfully created payment via gateway
+			log.Info().
+				Str("endpoint", "/v2/deposits").
+				Str("ref_id", paymentResult.RefID).
+				Str("gateway_ref", paymentResult.GatewayRefID).
+				Str("status", paymentResult.Status).
+				Str("payment_url", paymentResult.PaymentURL).
+				Str("qr_code", paymentResult.QRCode).
+				Msg("Payment created successfully via gateway for deposit")
+
+			// Map gateway response to payment data
+			paymentData = mapGatewayResponseToPaymentDataDeposit(paymentResult, expiredAt, paymentName, paymentInstruction)
+			gatewayRefID = &paymentResult.GatewayRefID
+
+			// Note: payment_data table requires transaction_id which deposits don't have
+			// For now, we store payment data in payment_logs only for deposits
+			// The payment code will be extracted from payment_logs in the invoice handler
+
+			// Update deposits table with gateway ref and payment logs
+			paymentLogEntry := map[string]interface{}{
+				"timestamp": time.Now().Format(time.RFC3339),
+				"type":      "PAYMENT_CREATED",
+				"data":      paymentData,
+			}
+			paymentLogJSON, _ := json.Marshal([]interface{}{paymentLogEntry})
+			_, err = tx.Exec(ctx, `
+				UPDATE deposits
+				SET payment_gateway_ref_id = $1, payment_logs = $2::jsonb, updated_at = NOW()
+				WHERE id = $3
+			`, gatewayRefID, string(paymentLogJSON), depositID)
+
+			if err != nil {
+				log.Warn().
+					Err(err).
+					Str("endpoint", "/v2/deposits").
+					Str("error_type", "PAYMENT_LOG_UPDATE_ERROR").
+					Str("deposit_id", depositID).
+					Msg("Failed to update payment logs (non-fatal)")
+			}
+		} else {
+			// For BALANCE payment, create basic payment data
+			paymentData = map[string]interface{}{
+				"code":        paymentCode,
+				"name":        paymentName,
+				"instruction": paymentInstruction,
+				"expiredAt":   expiredAt.Format(time.RFC3339),
+			}
 		}
 
-		utils.WriteSuccessJSON(w, map[string]interface{}{
+		// Commit transaction
+		if err = tx.Commit(ctx); err != nil {
+			log.Error().
+				Err(err).
+				Str("endpoint", "/v2/deposits").
+				Str("error_type", "DB_COMMIT_ERROR").
+				Msg("Failed to commit deposit transaction")
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		// Build response - same structure as create order
+		response := map[string]interface{}{
 			"step": "SUCCESS",
 			"deposit": map[string]interface{}{
 				"invoiceNumber": invoiceNumber,
 				"status":        "PENDING",
-				"amount":        req.Amount,
-				"paymentFee":    paymentFee,
-				"total":         total,
-				"currency":      req.Currency,
-				"payment":       paymentData,
-				"createdAt":     time.Now().Format(time.RFC3339),
-				"expiredAt":     expiredAt.Format(time.RFC3339),
+				"amount":        float64(amount),
+				"pricing": map[string]interface{}{
+					"subtotal":   float64(amount),
+					"paymentFee": float64(paymentFee),
+					"total":      float64(totalAmount),
+					"currency":   currency,
+				},
+				"payment":   paymentData,
+				"createdAt": time.Now().Format(time.RFC3339),
+				"expiredAt": expiredAt.Format(time.RFC3339),
 			},
-		})
+		}
+
+		utils.WriteSuccessJSON(w, response)
 	}
+}
+
+// extractIPAddress extracts IP address from request, removing port if present
+func extractIPAddress(r *http.Request) string {
+	// Check X-Forwarded-For header first
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff != "" {
+		// X-Forwarded-For can contain multiple IPs, take the first one
+		ips := strings.Split(xff, ",")
+		if len(ips) > 0 {
+			ip := strings.TrimSpace(ips[0])
+			// Remove port if present
+			if idx := strings.LastIndex(ip, ":"); idx != -1 {
+				// Check if it's an IPv6 address
+				if strings.Count(ip, ":") > 1 {
+					// IPv6 address, don't remove last colon
+					return ip
+				}
+				return ip[:idx]
+			}
+			return ip
+		}
+	}
+
+	// Check X-Real-IP header
+	xri := r.Header.Get("X-Real-IP")
+	if xri != "" {
+		// Remove port if present
+		if idx := strings.LastIndex(xri, ":"); idx != -1 {
+			return xri[:idx]
+		}
+		return xri
+	}
+
+	// Fall back to RemoteAddr
+	// RemoteAddr is in format "IP:port" or "[IPv6]:port"
+	remoteAddr := r.RemoteAddr
+	if idx := strings.LastIndex(remoteAddr, ":"); idx != -1 {
+		// Check if it's an IPv6 address
+		if strings.HasPrefix(remoteAddr, "[") {
+			// IPv6 address format: [::1]:port
+			if closingBracket := strings.LastIndex(remoteAddr, "]"); closingBracket != -1 {
+				return remoteAddr[1:closingBracket]
+			}
+		}
+		return remoteAddr[:idx]
+	}
+	return remoteAddr
+}
+
+// getGatewayForChannel returns gateway name for payment channel code
+func getGatewayForChannel(channelCode string) string {
+	gatewayMap := map[string]string{
+		// QRIS & E-Wallet via DANA Gapura
+		"QRIS": "DANA_DIRECT",
+		"DANA": "DANA_DIRECT",
+
+		// GoPay & ShopeePay via Midtrans
+		"GOPAY":     "MIDTRANS",
+		"SHOPEEPAY": "MIDTRANS",
+
+		// Retail via Xendit
+		"ALFAMART":  "XENDIT",
+		"INDOMARET": "XENDIT",
+
+		// Virtual Accounts via PakaiLink SNAP
+		// BRI uses PAKAILINK (BRI_DIRECT API not available yet)
+		"BRI_VA":      "PAKAILINK",
+		"VA_BRI":      "PAKAILINK", // alias
+		"BCA_VA":      "PAKAILINK",
+		"VA_BCA":      "PAKAILINK",
+		"BNI_VA":      "PAKAILINK",
+		"VA_BNI":      "PAKAILINK",
+		"BSI_VA":      "PAKAILINK",
+		"VA_BSI":      "PAKAILINK",
+		"CIMB_VA":     "PAKAILINK",
+		"VA_CIMB":     "PAKAILINK",
+		"DANAMON_VA":  "PAKAILINK",
+		"VA_DANAMON":  "PAKAILINK",
+		"MANDIRI_VA":  "PAKAILINK",
+		"VA_MANDIRI":  "PAKAILINK",
+		"BMI_VA":      "PAKAILINK",
+		"VA_BMI":      "PAKAILINK",
+		"BNC_VA":      "PAKAILINK",
+		"VA_BNC":      "PAKAILINK",
+		"OCBC_VA":     "PAKAILINK",
+		"VA_OCBC":     "PAKAILINK",
+		"PERMATA_VA":  "PAKAILINK",
+		"VA_PERMATA":  "PAKAILINK",
+		"SINARMAS_VA": "PAKAILINK",
+		"VA_SINARMAS": "PAKAILINK",
+	}
+
+	gateway, exists := gatewayMap[channelCode]
+	if !exists {
+		// Default to XENDIT for unknown channels
+		return "XENDIT"
+	}
+	return gateway
+}
+
+// mapGatewayResponseToPaymentDataDeposit maps payment gateway response to payment data format for deposits
+func mapGatewayResponseToPaymentDataDeposit(resp *payment.PaymentResponse, expiredAt time.Time, paymentName, paymentInstruction string) map[string]interface{} {
+	data := make(map[string]interface{})
+
+	// Common fields
+	data["code"] = resp.Channel
+	data["name"] = paymentName
+	if paymentInstruction != "" {
+		data["instruction"] = paymentInstruction
+	}
+
+	// Expiry
+	if resp.ExpiresAt.IsZero() {
+		data["expiredAt"] = expiredAt.Format(time.RFC3339)
+	} else {
+		data["expiredAt"] = resp.ExpiresAt.Format(time.RFC3339)
+	}
+
+	// Gateway reference
+	if resp.GatewayRefID != "" {
+		data["gatewayRefId"] = resp.GatewayRefID
+	}
+
+	// Determine payment code based on channel type
+	switch {
+	case resp.QRCode != "":
+		// QRIS payment - paymentCode is the QRIS string
+		data["paymentCode"] = resp.QRCode
+		data["paymentType"] = "QRIS"
+
+	case resp.VirtualAccount != "":
+		// Virtual Account - paymentCode is the VA number
+		data["paymentCode"] = resp.VirtualAccount
+		data["paymentType"] = "VIRTUAL_ACCOUNT"
+		if resp.BankCode != "" {
+			data["bankCode"] = resp.BankCode
+		}
+		if resp.AccountName != "" {
+			data["accountName"] = resp.AccountName
+		} else {
+			data["accountName"] = "GATE INDONESIA"
+		}
+
+	case resp.PaymentURL != "":
+		// E-Wallet / Redirect - paymentCode is the redirect URL
+		data["paymentCode"] = resp.PaymentURL
+		data["paymentType"] = "E_WALLET"
+
+	case resp.PaymentCode != "":
+		// Retail or other - paymentCode as is
+		data["paymentCode"] = resp.PaymentCode
+		data["paymentType"] = "RETAIL"
+	}
+
+	return data
 }

@@ -1,3 +1,43 @@
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000047_update_enums.up.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000047_update_enums.down.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000048_add_sku_backup_codes.up.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000048_add_sku_backup_codes.down.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000049_add_retry_count_to_transactions.up.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000049_add_retry_count_to_transactions.down.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000050_add_transaction_logs_columns.up.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000050_add_transaction_logs_columns.down.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000051_change_logs_to_jsonb.up.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000051_change_logs_to_jsonb.down.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000052_create_payment_data_table.up.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000052_create_payment_data_table.down.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000053_increase_payment_code_length.up.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000053_increase_payment_code_length.down.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000054_add_pending_mfa_status.up.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000054_add_pending_mfa_status.down.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000055_add_deposit_logs_columns.up.sql
+
+docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/000055_add_deposit_logs_columns.down.sql
+
+
+# Local
+Get-Content database/migrations/000054_add_pending_mfa_status.up.sql | docker exec -i gate_postgres psql -U gate -d gate_db
+
 # Database Migration & Management Guide - Seaply
 
 Ideally, database changes are managed through standard migrations to ensure consistency across Development, Staging, and Production (VPS) environments. This guide explains the workflow using **Golang Migrate** and **Docker**, including how to recover/initialize from a `db.sql` dump.

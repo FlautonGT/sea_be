@@ -6,7 +6,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"seaply/internal/utils"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog/log"
 )
 
 // ============================================
@@ -216,12 +219,12 @@ func HandleRegisterImpl(deps *Dependencies) http.HandlerFunc {
 			"primaryRegion":  req.PrimaryRegion,
 			"currentRegion":  req.PrimaryRegion, // Same as primaryRegion at registration
 			"currency":       currency,
-			"balance": map[string]float64{
-				"IDR": 0,
-				"MYR": 0,
-				"PHP": 0,
-				"SGD": 0,
-				"THB": 0,
+			"balance": map[string]interface{}{
+				"IDR": int64(0),
+				"MYR": int64(0),
+				"PHP": int64(0),
+				"SGD": int64(0),
+				"THB": int64(0),
 			},
 			"membership": map[string]interface{}{
 				"level": "CLASSIC",
@@ -442,19 +445,18 @@ func HandleRegisterGoogleImpl(deps *Dependencies) http.HandlerFunc {
 			"primaryRegion":  regionParam,
 			"currentRegion":  regionParam,
 			"currency":       currency,
-			"balance": map[string]float64{
-				"IDR": 0,
-				"MYR": 0,
-				"PHP": 0,
-				"SGD": 0,
-				"THB": 0,
+			"balance": map[string]interface{}{
+				"IDR": int64(0),
+				"MYR": int64(0),
+				"PHP": int64(0),
+				"SGD": int64(0),
+				"THB": int64(0),
 			},
 			"membership": map[string]interface{}{
 				"level": "CLASSIC",
 				"name":  "Classic",
 			},
 			"mfaStatus": "INACTIVE",
-			"googleId":  googleID,
 			"createdAt": createdAt.Format(time.RFC3339),
 		}
 
@@ -701,19 +703,23 @@ func HandleGetProfileImpl(deps *Dependencies) http.HandlerFunc {
 
 		// Get full user profile
 		var user UserRow
+		var currentRegion string
+		var createdAt, lastLoginAt, updatedAt *time.Time
 		err := deps.DB.Pool.QueryRow(ctx, `
 			SELECT
 				id, first_name, last_name, email, phone_number,
-				profile_picture, status, primary_region, membership_level,
+				profile_picture, status, primary_region, current_region, 
+				mfa_status, membership_level,
 				balance_idr, balance_myr, balance_php, balance_sgd, balance_thb,
-				total_transactions, total_spent_idr, email_verified_at
+				total_spent_idr, email_verified_at, created_at, last_login_at, updated_at
 			FROM users
 			WHERE id = $1
 		`, userID).Scan(
 			&user.ID, &user.FirstName, &user.LastName, &user.Email, &user.PhoneNumber,
-			&user.ProfilePicture, &user.Status, &user.PrimaryRegion, &user.MembershipLevel,
+			&user.ProfilePicture, &user.Status, &user.PrimaryRegion, &currentRegion,
+			&user.MFAStatus, &user.MembershipLevel,
 			&user.BalanceIDR, &user.BalanceMYR, &user.BalancePHP, &user.BalanceSGD, &user.BalanceTHB,
-			&user.TotalTransactions, &user.TotalSpentIDR, &user.EmailVerifiedAt,
+			&user.TotalSpentIDR, &user.EmailVerifiedAt, &createdAt, &lastLoginAt, &updatedAt,
 		)
 
 		if err != nil {
@@ -726,7 +732,13 @@ func HandleGetProfileImpl(deps *Dependencies) http.HandlerFunc {
 			return
 		}
 
-		// Build profile response
+		// Get currency based on region
+		currency := getCurrencyByRegion(currentRegion)
+
+		// Calculate membership progress
+		membershipProgress := getMembershipProgress(user.MembershipLevel, user.TotalSpentIDR)
+
+		// Build profile response (matching docs format)
 		profile := map[string]interface{}{
 			"id":             user.ID,
 			"firstName":      user.FirstName,
@@ -736,28 +748,131 @@ func HandleGetProfileImpl(deps *Dependencies) http.HandlerFunc {
 			"profilePicture": stringOrEmpty(user.ProfilePicture),
 			"status":         user.Status,
 			"primaryRegion":  user.PrimaryRegion,
-			"membership": map[string]interface{}{
-				"level": user.MembershipLevel,
-				"name":  getMembershipName(user.MembershipLevel),
-			},
+			"currentRegion":  currentRegion,
+			"currency":       currency,
 			"balance": map[string]interface{}{
-				"idr": user.BalanceIDR,
-				"myr": user.BalanceMYR,
-				"php": user.BalancePHP,
-				"sgd": user.BalanceSGD,
-				"thb": user.BalanceTHB,
+				"IDR": user.BalanceIDR,
+				"MYR": user.BalanceMYR,
+				"PHP": user.BalancePHP,
+				"SGD": user.BalanceSGD,
+				"THB": user.BalanceTHB,
 			},
-			"stats": map[string]interface{}{
-				"totalTransactions": user.TotalTransactions,
-				"totalSpent":        user.TotalSpentIDR,
+			"membership": map[string]interface{}{
+				"level":    user.MembershipLevel,
+				"name":     getMembershipName(user.MembershipLevel),
+				"benefits": getMembershipBenefits(user.MembershipLevel),
+				"progress": membershipProgress,
 			},
+			"mfaStatus": user.MFAStatus,
+		}
+
+		// Add timestamps
+		if user.EmailVerifiedAt != nil {
+			profile["emailVerifiedAt"] = user.EmailVerifiedAt.Format(time.RFC3339)
+		}
+		if createdAt != nil {
+			profile["createdAt"] = createdAt.Format(time.RFC3339)
+		}
+		if lastLoginAt != nil {
+			profile["lastLoginAt"] = lastLoginAt.Format(time.RFC3339)
+		}
+		if updatedAt != nil {
+			profile["updatedAt"] = updatedAt.Format(time.RFC3339)
 		}
 
 		utils.WriteSuccessJSON(w, profile)
 	}
 }
 
+// getCurrencyByRegion returns the currency for a region
+func getCurrencyByRegion(region string) string {
+	switch region {
+	case "ID":
+		return "IDR"
+	case "MY":
+		return "MYR"
+	case "PH":
+		return "PHP"
+	case "SG":
+		return "SGD"
+	case "TH":
+		return "THB"
+	default:
+		return "IDR"
+	}
+}
+
+// getMembershipBenefits returns benefits for a membership level
+func getMembershipBenefits(level string) []string {
+	switch level {
+	case "CLASSIC":
+		return []string{
+			"Akses ke semua produk",
+			"Bonus poin 1%",
+		}
+	case "PRESTIGE":
+		return []string{
+			"Diskon eksklusif hingga 5%",
+			"Priority customer support",
+			"Bonus poin 3%",
+			"Akses promo premium",
+		}
+	case "ROYAL":
+		return []string{
+			"Diskon eksklusif hingga 10%",
+			"Dedicated account manager",
+			"Bonus poin 5%",
+			"Akses promo VIP",
+			"Cashback mingguan",
+		}
+	default:
+		return []string{"Akses ke semua produk"}
+	}
+}
+
+// getMembershipProgress calculates progress to next level
+func getMembershipProgress(level string, totalSpent int64) map[string]interface{} {
+	var current, target int64
+	var nextLevel string
+
+	switch level {
+	case "CLASSIC":
+		current = totalSpent
+		target = 5000000 // 5 juta untuk Prestige
+		nextLevel = "PRESTIGE"
+	case "PRESTIGE":
+		current = totalSpent
+		target = 10000000 // 10 juta untuk Royal
+		nextLevel = "ROYAL"
+	case "ROYAL":
+		current = totalSpent
+		target = totalSpent // Already max level
+		nextLevel = ""
+	default:
+		current = totalSpent
+		target = 5000000
+		nextLevel = "PRESTIGE"
+	}
+
+	percentage := float64(0)
+	if target > 0 {
+		percentage = float64(current) / float64(target) * 100
+		if percentage > 100 {
+			percentage = 100
+		}
+	}
+
+	return map[string]interface{}{
+		"current":    current,
+		"target":     target,
+		"percentage": percentage,
+		"nextLevel":  nextLevel,
+		"currency":   "IDR",
+	}
+}
+
 // handleUpdateProfileImpl implements update user profile
+// Partial update - only updates fields that are provided, keeps existing values for others
 func HandleUpdateProfileImpl(deps *Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.GetUserIDFromContext(r.Context())
@@ -767,48 +882,150 @@ func HandleUpdateProfileImpl(deps *Dependencies) http.HandlerFunc {
 			return
 		}
 
-		var req UpdateProfileRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			utils.WriteBadRequestError(w, "Invalid request body")
-			return
-		}
-
-		// Sanitize inputs
-		req.FirstName = utils.SanitizeString(req.FirstName)
-		req.LastName = utils.SanitizeString(req.LastName)
-		req.PhoneNumber = utils.SanitizeString(req.PhoneNumber)
-		req.ProfilePicture = utils.SanitizeString(req.ProfilePicture)
-
-		// Validate inputs
-		validationErrors := make(map[string]string)
-		if req.FirstName == "" {
-			validationErrors["firstName"] = "First name is required"
-		}
-		if req.PhoneNumber != "" && !utils.ValidatePhone(req.PhoneNumber) {
-			validationErrors["phoneNumber"] = "Invalid phone number format"
-		}
-
-		if len(validationErrors) > 0 {
-			utils.WriteValidationErrorJSON(w, "Validation failed", validationErrors)
-			return
-		}
-
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
+		contentType := r.Header.Get("Content-Type")
+
+		// Parse multipart form data (5MB max)
+		if err := r.ParseMultipartForm(5 << 20); err != nil {
+			log.Warn().
+				Err(err).
+				Str("endpoint", "/v2/user/profile").
+				Str("user_id", userID).
+				Str("content_type", contentType).
+				Msg("Failed to parse form data")
+			utils.WriteBadRequestError(w, "Invalid form data or file too large (max 5MB)")
+			return
+		}
+
+		// Parse form values
+		firstName := utils.SanitizeString(r.FormValue("firstName"))
+		lastName := utils.SanitizeString(r.FormValue("lastName"))
+		phoneNumber := utils.SanitizeString(r.FormValue("phoneNumber"))
+
+		// Check for profile picture file
+		var profilePictureFile multipart.File
+		var profilePictureHeader *multipart.FileHeader
+		hasProfilePicture := false
+
+		file, header, err := r.FormFile("profilePicture")
+		if err == nil && file != nil {
+			defer file.Close()
+			profilePictureFile = file
+			profilePictureHeader = header
+			hasProfilePicture = true
+
+			// Validate file type (JPG/PNG only)
+			ext := strings.ToLower(filepath.Ext(header.Filename))
+			if ext != ".jpg" && ext != ".jpeg" && ext != ".png" {
+				utils.WriteErrorJSON(w, http.StatusBadRequest, "INVALID_FILE_TYPE",
+					"Only JPG and PNG files are allowed", "")
+				return
+			}
+
+			// Validate file size (max 5MB)
+			if header.Size > 5<<20 {
+				utils.WriteErrorJSON(w, http.StatusBadRequest, "FILE_TOO_LARGE",
+					"Profile picture must be less than 5MB", "")
+				return
+			}
+		}
+
+		// Validate phone number format if provided
+		if phoneNumber != "" && !utils.ValidatePhone(phoneNumber) {
+			utils.WriteValidationErrorJSON(w, "Validation failed", map[string]string{
+				"phoneNumber": "Invalid phone number format",
+			})
+			return
+		}
+
+		// Check if at least one field is provided
+		if firstName == "" && lastName == "" && phoneNumber == "" && !hasProfilePicture {
+			utils.WriteErrorJSON(w, http.StatusBadRequest, "INVALID_REQUEST",
+				"Please provide at least one field to update", "")
+			return
+		}
+
+		// Get current profile data (for partial update)
+		var currentFirstName, currentLastName, currentPhoneNumber string
+		var currentProfilePicture *string
+		err = deps.DB.Pool.QueryRow(ctx, `
+			SELECT first_name, COALESCE(last_name, ''), COALESCE(phone_number, ''), profile_picture
+			FROM users WHERE id = $1
+		`, userID).Scan(&currentFirstName, &currentLastName, &currentPhoneNumber, &currentProfilePicture)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to get current profile")
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		// Handle profile picture upload
+		var newProfilePictureURL *string
+		if hasProfilePicture && deps.S3 != nil {
+			// Delete old profile picture if exists
+			if currentProfilePicture != nil && *currentProfilePicture != "" {
+				if err := deps.S3.DeleteByURL(ctx, *currentProfilePicture); err != nil {
+					log.Warn().Err(err).Str("url", *currentProfilePicture).Msg("Failed to delete old profile picture")
+				}
+			}
+
+			// Upload new profile picture with custom filename: /profiles/{userId}.{ext}
+			ext := strings.ToLower(filepath.Ext(profilePictureHeader.Filename))
+			filename := fmt.Sprintf("%s%s", userID, ext)
+
+			result, err := deps.S3.UploadFromReader(ctx, "profiles", profilePictureFile, filename, profilePictureHeader.Header.Get("Content-Type"))
+			if err != nil {
+				log.Error().Err(err).Str("user_id", userID).Msg("Failed to upload profile picture to S3")
+				utils.WriteErrorJSON(w, http.StatusInternalServerError, "UPLOAD_FAILED",
+					"Failed to upload profile picture", "")
+				return
+			}
+
+			newProfilePictureURL = &result.URL
+			log.Info().
+				Str("user_id", userID).
+				Str("url", result.URL).
+				Msg("Profile picture uploaded successfully")
+		}
+
+		// Prepare update values (partial update - keep existing if not provided)
+		updateFirstName := currentFirstName
+		updateLastName := currentLastName
+		updatePhoneNumber := currentPhoneNumber
+		updateProfilePicture := currentProfilePicture
+
+		if firstName != "" {
+			updateFirstName = firstName
+		}
+		if lastName != "" {
+			updateLastName = lastName
+		}
+		if phoneNumber != "" {
+			updatePhoneNumber = phoneNumber
+		}
+		if newProfilePictureURL != nil {
+			updateProfilePicture = newProfilePictureURL
+		}
+
 		// Update user profile
-		_, err := deps.DB.Pool.Exec(ctx, `
+		_, err = deps.DB.Pool.Exec(ctx, `
 			UPDATE users
 			SET
 				first_name = $1,
-				last_name = $2,
-				phone_number = $3,
-				profile_picture = $4
+				last_name = NULLIF($2, ''),
+				phone_number = NULLIF($3, ''),
+				profile_picture = $4,
+				updated_at = NOW()
 			WHERE id = $5
-		`, req.FirstName, nullString(req.LastName), nullString(req.PhoneNumber),
-			nullString(req.ProfilePicture), userID)
+		`, updateFirstName, updateLastName, updatePhoneNumber, updateProfilePicture, userID)
 
 		if err != nil {
+			log.Error().
+				Err(err).
+				Str("endpoint", "/v2/user/profile").
+				Str("user_id", userID).
+				Msg("Failed to update user profile")
 			utils.WriteInternalServerError(w)
 			return
 		}
@@ -823,20 +1040,31 @@ func HandleUpdateProfileImpl(deps *Dependencies) http.HandlerFunc {
 				id, first_name, last_name, email, phone_number,
 				profile_picture, status, primary_region, membership_level,
 				balance_idr, balance_myr, balance_php, balance_sgd, balance_thb,
-				total_transactions, total_spent_idr
+				total_spent_idr
 			FROM users
 			WHERE id = $1
 		`, userID).Scan(
 			&user.ID, &user.FirstName, &user.LastName, &user.Email, &user.PhoneNumber,
 			&user.ProfilePicture, &user.Status, &user.PrimaryRegion, &user.MembershipLevel,
 			&user.BalanceIDR, &user.BalanceMYR, &user.BalancePHP, &user.BalanceSGD, &user.BalanceTHB,
-			&user.TotalTransactions, &user.TotalSpentIDR,
+			&user.TotalSpentIDR,
 		)
 
 		if err != nil {
+			log.Error().
+				Err(err).
+				Str("endpoint", "/v2/user/profile").
+				Str("user_id", userID).
+				Msg("Failed to fetch updated user profile")
 			utils.WriteInternalServerError(w)
 			return
 		}
+
+		// Get total transactions count
+		var totalTransactions int64
+		_ = deps.DB.Pool.QueryRow(ctx, `
+			SELECT COUNT(*) FROM transactions WHERE user_id = $1
+		`, userID).Scan(&totalTransactions)
 
 		// Build profile response
 		profile := map[string]interface{}{
@@ -860,7 +1088,7 @@ func HandleUpdateProfileImpl(deps *Dependencies) http.HandlerFunc {
 				"thb": user.BalanceTHB,
 			},
 			"stats": map[string]interface{}{
-				"totalTransactions": user.TotalTransactions,
+				"totalTransactions": totalTransactions,
 				"totalSpent":        user.TotalSpentIDR,
 			},
 		}
@@ -1381,16 +1609,22 @@ func HandleLoginGoogleImpl(deps *Dependencies) http.HandlerFunc {
 
 		// Find user by Google ID or email
 		var user UserRow
+		var currentRegion string
+		var createdAt, lastLoginAt *time.Time
 		err = deps.DB.Pool.QueryRow(ctx, `
 			SELECT
-				id, first_name, last_name, email, status,
-				profile_picture, primary_region, membership_level, mfa_status
+				id, first_name, last_name, email, phone_number, status,
+				profile_picture, primary_region, current_region, membership_level, mfa_status,
+				balance_idr, balance_myr, balance_php, balance_sgd, balance_thb,
+				created_at, last_login_at
 			FROM users
 			WHERE google_id = $1 OR (LOWER(email) = LOWER($2) AND google_id IS NOT NULL)
 			LIMIT 1
 		`, googleID, googleEmail).Scan(
-			&user.ID, &user.FirstName, &user.LastName, &user.Email, &user.Status,
-			&user.ProfilePicture, &user.PrimaryRegion, &user.MembershipLevel, &user.MFAStatus,
+			&user.ID, &user.FirstName, &user.LastName, &user.Email, &user.PhoneNumber, &user.Status,
+			&user.ProfilePicture, &user.PrimaryRegion, &currentRegion, &user.MembershipLevel, &user.MFAStatus,
+			&user.BalanceIDR, &user.BalanceMYR, &user.BalancePHP, &user.BalanceSGD, &user.BalanceTHB,
+			&createdAt, &lastLoginAt,
 		)
 
 		if err != nil {
@@ -1447,7 +1681,7 @@ func HandleLoginGoogleImpl(deps *Dependencies) http.HandlerFunc {
 			UPDATE users SET last_login_at = NOW() WHERE id = $1
 		`, user.ID)
 
-		// Build user response
+		// Build user response matching docs format
 		lastName := ""
 		if user.LastName != nil {
 			lastName = *user.LastName
@@ -1455,6 +1689,46 @@ func HandleLoginGoogleImpl(deps *Dependencies) http.HandlerFunc {
 		profilePic := ""
 		if user.ProfilePicture != nil {
 			profilePic = *user.ProfilePicture
+		}
+		phoneNumber := ""
+		if user.PhoneNumber != nil {
+			phoneNumber = *user.PhoneNumber
+		}
+
+		// Get currency from region
+		currency := getCurrencyByRegion(currentRegion)
+
+		userResponse := map[string]interface{}{
+			"id":             user.ID,
+			"firstName":      user.FirstName,
+			"lastName":       lastName,
+			"email":          user.Email,
+			"phoneNumber":    phoneNumber,
+			"profilePicture": profilePic,
+			"status":         user.Status,
+			"primaryRegion":  user.PrimaryRegion,
+			"currentRegion":  currentRegion,
+			"currency":       currency,
+			"balance": map[string]interface{}{
+				"IDR": user.BalanceIDR,
+				"MYR": user.BalanceMYR,
+				"PHP": user.BalancePHP,
+				"SGD": user.BalanceSGD,
+				"THB": user.BalanceTHB,
+			},
+			"membership": map[string]interface{}{
+				"level": user.MembershipLevel,
+				"name":  getMembershipName(user.MembershipLevel),
+			},
+			"mfaStatus": user.MFAStatus,
+		}
+
+		// Add timestamps
+		if createdAt != nil {
+			userResponse["createdAt"] = createdAt.Format(time.RFC3339)
+		}
+		if lastLoginAt != nil {
+			userResponse["lastLoginAt"] = lastLoginAt.Format(time.RFC3339)
 		}
 
 		utils.WriteSuccessJSON(w, UserLoginSuccessResponse{
@@ -1465,20 +1739,255 @@ func HandleLoginGoogleImpl(deps *Dependencies) http.HandlerFunc {
 				ExpiresIn:    int64(deps.Config.JWT.AccessTokenExpiry.Seconds()),
 				TokenType:    "Bearer",
 			},
-			User: map[string]interface{}{
-				"id":             user.ID,
-				"firstName":      user.FirstName,
-				"lastName":       lastName,
-				"email":          user.Email,
-				"profilePicture": profilePic,
-				"status":         user.Status,
-				"primaryRegion":  user.PrimaryRegion,
-				"membership": map[string]interface{}{
-					"level": user.MembershipLevel,
-					"name":  getMembershipName(user.MembershipLevel),
-				},
-				"mfaStatus": user.MFAStatus,
-			},
+			User: userResponse,
+		})
+	}
+}
+
+// HandleEnableMFAImpl implements enable MFA
+func HandleEnableMFAImpl(deps *Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := middleware.GetUserIDFromContext(r.Context())
+		if userID == "" {
+			utils.WriteErrorJSON(w, http.StatusUnauthorized, "UNAUTHORIZED",
+				"Authentication required", "")
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		// Get user email and current MFA status
+		var email, mfaStatus string
+		var mfaSecret *string
+		err := deps.DB.Pool.QueryRow(ctx, `
+			SELECT email, mfa_status, mfa_secret FROM users WHERE id = $1
+		`, userID).Scan(&email, &mfaStatus, &mfaSecret)
+
+		if err != nil {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to get user for MFA enable")
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		// Check if MFA is already active
+		if mfaStatus == "ACTIVE" {
+			utils.WriteErrorJSON(w, http.StatusBadRequest, "MFA_ALREADY_ENABLED",
+				"MFA is already enabled for this account", "")
+			return
+		}
+
+		// Generate new MFA secret with issuer "Seaply"
+		secret, otpURL, err := utils.GenerateMFASecret(email, "Seaply")
+		if err != nil {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to generate MFA secret")
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		// Generate backup codes
+		backupCodes, err := utils.GenerateBackupCodes(5)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to generate backup codes")
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		// Store secret and backup codes (MFA still INACTIVE until verified)
+		// We track pending state by having mfa_secret set but mfa_status = INACTIVE
+		_, err = deps.DB.Pool.Exec(ctx, `
+			UPDATE users 
+			SET mfa_secret = $1, mfa_backup_codes = $2, updated_at = NOW()
+			WHERE id = $3
+		`, secret, backupCodes, userID)
+
+		if err != nil {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to store MFA secret")
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		utils.WriteSuccessJSON(w, map[string]interface{}{
+			"step":        "SETUP",
+			"qrCode":      otpURL,
+			"secret":      secret,
+			"backupCodes": backupCodes,
+		})
+	}
+}
+
+// HandleVerifyMFASetupImpl implements verify MFA setup
+func HandleVerifyMFASetupImpl(deps *Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := middleware.GetUserIDFromContext(r.Context())
+		if userID == "" {
+			utils.WriteErrorJSON(w, http.StatusUnauthorized, "UNAUTHORIZED",
+				"Authentication required", "")
+			return
+		}
+
+		var req struct {
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			utils.WriteBadRequestError(w, "Invalid request body")
+			return
+		}
+
+		if req.Code == "" {
+			utils.WriteValidationErrorJSON(w, "Validation failed", map[string]string{
+				"code": "Verification code is required",
+			})
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		// Get user MFA secret and status
+		var mfaStatus string
+		var mfaSecret *string
+		err := deps.DB.Pool.QueryRow(ctx, `
+			SELECT mfa_status, mfa_secret FROM users WHERE id = $1
+		`, userID).Scan(&mfaStatus, &mfaSecret)
+
+		if err != nil {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to get user for MFA verify")
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		// Check if MFA is already active
+		if mfaStatus == "ACTIVE" {
+			utils.WriteErrorJSON(w, http.StatusBadRequest, "MFA_ALREADY_ACTIVE",
+				"MFA is already active for this account", "")
+			return
+		}
+
+		// Check if MFA setup is pending (secret exists but status is INACTIVE)
+		if mfaSecret == nil || *mfaSecret == "" {
+			utils.WriteErrorJSON(w, http.StatusBadRequest, "MFA_NOT_SETUP",
+				"MFA secret not found. Please enable MFA first.", "")
+			return
+		}
+
+		// Validate the code
+		if !utils.ValidateMFACode(*mfaSecret, req.Code) {
+			utils.WriteErrorJSON(w, http.StatusBadRequest, "INVALID_CODE",
+				"Invalid verification code", "")
+			return
+		}
+
+		// Activate MFA
+		_, err = deps.DB.Pool.Exec(ctx, `
+			UPDATE users SET mfa_status = 'ACTIVE', updated_at = NOW() WHERE id = $1
+		`, userID)
+
+		if err != nil {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to activate MFA")
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		log.Info().Str("user_id", userID).Msg("MFA enabled successfully")
+
+		utils.WriteSuccessJSON(w, map[string]interface{}{
+			"step":      "SUCCESS",
+			"message":   "MFA has been enabled successfully",
+			"mfaStatus": "ACTIVE",
+		})
+	}
+}
+
+// HandleDisableMFAImpl implements disable MFA
+func HandleDisableMFAImpl(deps *Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := middleware.GetUserIDFromContext(r.Context())
+		if userID == "" {
+			utils.WriteErrorJSON(w, http.StatusUnauthorized, "UNAUTHORIZED",
+				"Authentication required", "")
+			return
+		}
+
+		var req struct {
+			Code     string `json:"code"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			utils.WriteBadRequestError(w, "Invalid request body")
+			return
+		}
+
+		// Validate required fields
+		validationErrors := make(map[string]string)
+		if req.Code == "" {
+			validationErrors["code"] = "MFA code is required"
+		}
+		if req.Password == "" {
+			validationErrors["password"] = "Password is required"
+		}
+		if len(validationErrors) > 0 {
+			utils.WriteValidationErrorJSON(w, "Validation failed", validationErrors)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		// Get user data
+		var mfaStatus string
+		var mfaSecret, passwordHash *string
+		err := deps.DB.Pool.QueryRow(ctx, `
+			SELECT mfa_status, mfa_secret, password_hash FROM users WHERE id = $1
+		`, userID).Scan(&mfaStatus, &mfaSecret, &passwordHash)
+
+		if err != nil {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to get user for MFA disable")
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		// Check if MFA is active
+		if mfaStatus != "ACTIVE" {
+			utils.WriteErrorJSON(w, http.StatusBadRequest, "MFA_NOT_ACTIVE",
+				"MFA is not active for this account", "")
+			return
+		}
+
+		// Verify password (if user has password - not OAuth only)
+		if passwordHash != nil && *passwordHash != "" {
+			if !utils.CheckPassword(req.Password, *passwordHash) {
+				utils.WriteErrorJSON(w, http.StatusBadRequest, "INVALID_PASSWORD",
+					"Invalid password", "")
+				return
+			}
+		}
+
+		// Verify MFA code
+		if mfaSecret == nil || !utils.ValidateMFACode(*mfaSecret, req.Code) {
+			utils.WriteErrorJSON(w, http.StatusBadRequest, "INVALID_CODE",
+				"Invalid MFA code", "")
+			return
+		}
+
+		// Disable MFA
+		_, err = deps.DB.Pool.Exec(ctx, `
+			UPDATE users 
+			SET mfa_status = 'INACTIVE', mfa_secret = NULL, mfa_backup_codes = NULL, updated_at = NOW()
+			WHERE id = $1
+		`, userID)
+
+		if err != nil {
+			log.Error().Err(err).Str("user_id", userID).Msg("Failed to disable MFA")
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		log.Info().Str("user_id", userID).Msg("MFA disabled successfully")
+
+		utils.WriteSuccessJSON(w, map[string]interface{}{
+			"message":   "MFA has been disabled",
+			"mfaStatus": "INACTIVE",
 		})
 	}
 }

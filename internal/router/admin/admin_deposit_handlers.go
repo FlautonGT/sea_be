@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -426,14 +427,33 @@ func HandleConfirmDepositImpl(deps *Dependencies) http.HandlerFunc {
 			return
 		}
 
+		// Get deposit invoice number and payment channel for mutation
+		var depositInvoiceNumber sql.NullString
+		var paymentChannelName sql.NullString
+		_ = tx.QueryRow(ctx, `
+			SELECT d.invoice_number, pc.name
+			FROM deposits d
+			LEFT JOIN payment_channels pc ON d.payment_channel_id = pc.id
+			WHERE d.id = $1
+		`, depositID).Scan(&depositInvoiceNumber, &paymentChannelName)
+		
+		invoiceNum := ""
+		if depositInvoiceNumber.Valid {
+			invoiceNum = depositInvoiceNumber.String
+		}
+		paymentName := "Bank Transfer"
+		if paymentChannelName.Valid && paymentChannelName.String != "" {
+			paymentName = paymentChannelName.String
+		}
+
 		// Create balance mutation record
 		_, err = tx.Exec(ctx, `
-			INSERT INTO balance_mutations (
-				user_id, type, amount, balance_before, balance_after,
+			INSERT INTO mutations (
+				user_id, invoice_number, mutation_type, amount, balance_before, balance_after,
 				description, reference_type, reference_id, currency, created_at
-			) VALUES ($1, 'CREDIT', $2, $3, $4, $5, 'DEPOSIT', $6, $7, NOW())
-		`, userID, amount, currentBalance, newBalance,
-			"Deposit confirmed: "+req.Reason, depositID, currency)
+			) VALUES ($1, $2, 'CREDIT', $3, $4, $5, $6, 'DEPOSIT', $7, $8, NOW())
+		`, userID, nullString(invoiceNum), amount, currentBalance, newBalance,
+			"Isi Ulang Saldo via "+paymentName, depositID, currency)
 
 		if err != nil {
 			utils.WriteInternalServerError(w)

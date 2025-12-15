@@ -292,6 +292,8 @@ func (b *BangJeffProvider) CreateOrder(ctx context.Context, req *OrderRequest) (
 		Message:       trx.Message,
 		SN:            trx.SN,
 		CreatedAt:     time.Now(),
+		RawRequest:    body,
+		RawResponse:   respBody,
 	}, nil
 }
 
