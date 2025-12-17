@@ -547,6 +547,14 @@ func HandleGetDepositInvoice(deps *Dependencies) http.HandlerFunc {
 	return handleGetDepositInvoiceImpl(deps)
 }
 
+func HandleGetReviews(deps *Dependencies) http.HandlerFunc {
+	return handleGetReviewsImpl(deps)
+}
+
+func HandleCreateReview(deps *Dependencies) http.HandlerFunc {
+	return handleCreateReviewImpl(deps)
+}
+
 func HandleQRGenerate(_ *Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		data := r.URL.Query().Get("data")

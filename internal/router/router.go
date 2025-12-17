@@ -149,6 +149,12 @@ func setupPublicRoutes(r chi.Router, deps *Dependencies) {
 	// GET /v2/deposits/invoices
 	r.Get("/deposits/invoices", public.HandleGetDepositInvoice(toPublicDeps(deps)))
 
+	// GET /v2/reviews
+	r.Get("/reviews", public.HandleGetReviews(toPublicDeps(deps)))
+
+	// POST /v2/reviews
+	r.Post("/reviews", public.HandleCreateReview(toPublicDeps(deps)))
+
 }
 
 func setupAuthRoutes(r chi.Router, deps *Dependencies) {

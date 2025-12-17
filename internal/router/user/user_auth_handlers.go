@@ -1354,19 +1354,8 @@ func HandleForgotPasswordImpl(deps *Dependencies) http.HandlerFunc {
 			return
 		}
 
-		// Check if user has password (not OAuth-only user)
-		var passwordHash sql.NullString
-		err = deps.DB.Pool.QueryRow(ctx, `
-			SELECT password_hash FROM users WHERE id = $1
-		`, userID).Scan(&passwordHash)
-
-		if err != nil || !passwordHash.Valid || passwordHash.String == "" {
-			// User doesn't have password, can't reset
-			utils.WriteErrorJSON(w, http.StatusBadRequest, "OAUTH_ACCOUNT",
-				"Akun ini terdaftar menggunakan Google. Silakan login dengan Google.", "")
-			return
-		}
-
+		// Allow forgot password for Google-registered users too
+		// They can set a password through the reset password flow
 		// Generate password reset token
 		resetToken, err := deps.JWTService.GenerateValidationToken(map[string]interface{}{
 			"userId": userID,
@@ -1651,24 +1640,7 @@ func HandleLoginGoogleImpl(deps *Dependencies) http.HandlerFunc {
 			`, regionParam, user.ID)
 		}
 
-		// Check if MFA is enabled
-		if user.MFAStatus == "ACTIVE" {
-			// Generate MFA token
-			mfaToken, err := deps.JWTService.GenerateMFAToken(user.ID, "user")
-			if err != nil {
-				utils.WriteInternalServerError(w)
-				return
-			}
-
-			expiresAt := time.Now().Add(5 * time.Minute).Format(time.RFC3339)
-			utils.WriteSuccessJSON(w, MFARequiredResponse{
-				Step:      "MFA_VERIFICATION",
-				MFAToken:  mfaToken,
-				ExpiresAt: expiresAt,
-			})
-			return
-		}
-
+		// Skip MFA verification for Google login (Google OAuth already provides authentication)
 		// Generate tokens
 		accessToken, refreshToken, err := generateUserTokens(deps, user)
 		if err != nil {

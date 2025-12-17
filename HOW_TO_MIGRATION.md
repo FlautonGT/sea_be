@@ -36,7 +36,7 @@ docker exec -i gate_postgres psql -U gate -d gate_db < database/migrations/00005
 
 
 # Local
-Get-Content database/migrations/000054_add_pending_mfa_status.up.sql | docker exec -i gate_postgres psql -U gate -d gate_db
+Get-Content database/migrations/000055_add_deposit_logs_columns.up.sql | docker exec -i gate_postgres psql -U gate -d gate_db
 
 # Database Migration & Management Guide - Seaply
 

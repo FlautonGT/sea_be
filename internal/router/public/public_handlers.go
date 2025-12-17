@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"seaply/internal/middleware"
@@ -192,6 +194,7 @@ func handleGetProductsImpl(deps *Dependencies) http.HandlerFunc {
 
 		productCode := r.URL.Query().Get("productCode")
 		categoryCode := r.URL.Query().Get("categoryCode")
+		searchQuery := strings.TrimSpace(r.URL.Query().Get("search"))
 
 		// If productCode is provided, return single product
 		if productCode != "" {
@@ -261,14 +264,25 @@ func handleGetProductsImpl(deps *Dependencies) http.HandlerFunc {
 			WHERE p.is_active = true AND pr.region_code = $1
 		`
 
+		args := []interface{}{region}
+		argIndex := 2
+
+		// Add category filter if provided
 		if categoryCode != "" {
-			query += ` AND c.code = $2`
-			query += ` ORDER BY p.is_popular DESC, p.title ASC`
-			rows, err = deps.DB.Pool.Query(ctx, query, region, categoryCode)
-		} else {
-			query += ` ORDER BY p.is_popular DESC, p.title ASC`
-			rows, err = deps.DB.Pool.Query(ctx, query, region)
+			query += ` AND c.code = $` + strconv.Itoa(argIndex)
+			args = append(args, categoryCode)
+			argIndex++
 		}
+
+		// Add search filter if provided (case-insensitive search on title)
+		if searchQuery != "" {
+			query += ` AND p.title ILIKE $` + strconv.Itoa(argIndex)
+			args = append(args, "%"+searchQuery+"%")
+			argIndex++
+		}
+
+		query += ` ORDER BY p.is_popular DESC, p.title ASC`
+		rows, err = deps.DB.Pool.Query(ctx, query, args...)
 
 		if err != nil {
 			utils.WriteInternalServerError(w)
@@ -2010,6 +2024,474 @@ func handleGetDepositInvoiceImpl(deps *Dependencies) http.HandlerFunc {
 		}
 		if paidAt != nil {
 			response["paidAt"] = paidAt.Format(time.RFC3339)
+		}
+
+		utils.WriteSuccessJSON(w, response)
+	}
+}
+
+// ============================================
+// REVIEW HANDLERS
+// ============================================
+
+// Helper functions for masking
+func maskInvoiceNumber(invoiceNumber string) string {
+	if len(invoiceNumber) <= 8 {
+		return strings.Repeat("*", len(invoiceNumber))
+	}
+	if len(invoiceNumber) <= 24 {
+		// Format: 4 chars front, stars, 4 chars back
+		front := invoiceNumber[:4]
+		back := invoiceNumber[len(invoiceNumber)-4:]
+		middleStars := strings.Repeat("*", len(invoiceNumber)-8)
+		return front + middleStars + back
+	}
+	// For longer invoice numbers: first 4, 16 stars, last 4
+	front := invoiceNumber[:4]
+	back := invoiceNumber[len(invoiceNumber)-4:]
+	return front + strings.Repeat("*", 16) + back
+}
+
+func maskFullName(firstName, lastName string) *string {
+	if firstName == "" {
+		return nil
+	}
+	// Take first 3 characters + stars for the rest
+	var masked string
+	if len(firstName) <= 3 {
+		masked = firstName
+	} else {
+		masked = firstName[:3]
+	}
+	// Add stars for remaining firstName and all lastName
+	remainingLength := len(firstName) - 3
+	if remainingLength > 0 {
+		masked += strings.Repeat("*", remainingLength)
+	}
+	if lastName != "" {
+		masked += strings.Repeat("*", len(lastName))
+	}
+	return &masked
+}
+
+func maskPhoneNumber(phone string) string {
+	if phone == "" {
+		return ""
+	}
+	// Show only last 3 digits
+	if len(phone) <= 3 {
+		return strings.Repeat("*", len(phone))
+	}
+	last3 := phone[len(phone)-3:]
+	stars := strings.Repeat("*", len(phone)-3)
+	return stars + last3
+}
+
+func handleGetReviewsImpl(deps *Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		// Parse query parameters
+		pageStr := r.URL.Query().Get("page")
+		limitStr := r.URL.Query().Get("limit")
+		productCode := strings.TrimSpace(r.URL.Query().Get("productCode"))
+		invoiceNumber := strings.TrimSpace(r.URL.Query().Get("invoiceNumber"))
+
+		// Parse page (default 1)
+		page := 1
+		if pageStr != "" {
+			if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
+				page = p
+			}
+		}
+
+		// Parse limit (default 10)
+		limit := 10
+		if limitStr != "" {
+			if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 100 {
+				limit = l
+			}
+		}
+
+		offset := (page - 1) * limit
+
+		// If invoiceNumber is provided, return single review or null
+		if invoiceNumber != "" {
+			var reviewID, reviewInvoiceNumber, reviewComment string
+			var reviewRating int
+			var reviewCreatedAt time.Time
+			var transactionID string
+			var transactionUserID sql.NullString
+			var transactionContactPhone sql.NullString
+			var productName, skuName string
+			var userFirstName, userLastName sql.NullString
+
+			err := deps.DB.Pool.QueryRow(ctx, `
+				SELECT 
+					r.id, r.invoice_number, r.rating, r.comment, r.created_at,
+					r.transaction_id, t.user_id, t.contact_phone,
+					p.title as product_name, s.name as sku_name,
+					u.first_name, u.last_name
+				FROM reviews r
+				JOIN transactions t ON r.transaction_id = t.id
+				JOIN products p ON t.product_id = p.id
+				JOIN skus s ON t.sku_id = s.id
+				LEFT JOIN users u ON t.user_id = u.id
+				WHERE r.invoice_number = $1
+			`, invoiceNumber).Scan(
+				&reviewID, &reviewInvoiceNumber, &reviewRating, &reviewComment, &reviewCreatedAt,
+				&transactionID, &transactionUserID, &transactionContactPhone,
+				&productName, &skuName,
+				&userFirstName, &userLastName,
+			)
+
+			if err != nil {
+				if err == pgx.ErrNoRows {
+					// No review found for this invoice
+					utils.WriteSuccessJSON(w, nil)
+					return
+				}
+				utils.WriteInternalServerError(w)
+				return
+			}
+
+			// Build response
+			response := map[string]interface{}{
+				"rating":       reviewRating,
+				"comment":      reviewComment,
+				"invoiceNumber": maskInvoiceNumber(reviewInvoiceNumber),
+				"productName":  productName,
+				"skuName":      skuName,
+				"createdAt":    reviewCreatedAt.Format(time.RFC3339),
+			}
+
+			// Mask fullName (only if auth user)
+			if transactionUserID.Valid && userFirstName.Valid {
+				lastNameStr := ""
+				if userLastName.Valid {
+					lastNameStr = userLastName.String
+				}
+				fullName := maskFullName(userFirstName.String, lastNameStr)
+				if fullName != nil {
+					response["fullName"] = *fullName
+				} else {
+					response["fullName"] = nil
+				}
+			} else {
+				response["fullName"] = nil
+			}
+
+			// Mask phoneNumber
+			if transactionContactPhone.Valid {
+				response["phoneNumber"] = maskPhoneNumber(transactionContactPhone.String)
+			} else {
+				response["phoneNumber"] = ""
+			}
+
+			utils.WriteSuccessJSON(w, response)
+			return
+		}
+
+		// Build overview query (rating counts and total)
+		overviewQuery := `
+			SELECT 
+				r.rating,
+				COUNT(*) as count
+			FROM reviews r
+			JOIN transactions t ON r.transaction_id = t.id
+			JOIN products p ON t.product_id = p.id
+			WHERE 1=1
+		`
+
+		overviewArgs := []interface{}{}
+		overviewArgIndex := 1
+
+		// Add product filter if provided (same as main query)
+		if productCode != "" {
+			overviewQuery += ` AND p.code = $` + strconv.Itoa(overviewArgIndex)
+			overviewArgs = append(overviewArgs, productCode)
+			overviewArgIndex++
+		}
+
+		overviewQuery += ` GROUP BY r.rating ORDER BY r.rating`
+
+		// Get overview data
+		overviewRows, err := deps.DB.Pool.Query(ctx, overviewQuery, overviewArgs...)
+		if err != nil {
+			utils.WriteInternalServerError(w)
+			return
+		}
+		defer overviewRows.Close()
+
+		// Initialize rating counts
+		ratingCounts := map[string]int{
+			"1": 0,
+			"2": 0,
+			"3": 0,
+			"4": 0,
+			"5": 0,
+		}
+		total := 0
+
+		for overviewRows.Next() {
+			var rating int
+			var count int
+			if err := overviewRows.Scan(&rating, &count); err != nil {
+				continue
+			}
+			ratingStr := strconv.Itoa(rating)
+			if _, exists := ratingCounts[ratingStr]; exists {
+				ratingCounts[ratingStr] = count
+				total += count
+			}
+		}
+
+		// Build query for list of reviews
+		query := `
+			SELECT 
+				r.id, r.invoice_number, r.rating, r.comment, r.created_at,
+				r.transaction_id, t.user_id, t.contact_phone,
+				p.title as product_name, s.name as sku_name,
+				u.first_name, u.last_name
+			FROM reviews r
+			JOIN transactions t ON r.transaction_id = t.id
+			JOIN products p ON t.product_id = p.id
+			JOIN skus s ON t.sku_id = s.id
+			LEFT JOIN users u ON t.user_id = u.id
+			WHERE 1=1
+		`
+
+		args := []interface{}{}
+		argIndex := 1
+
+		// Add product filter if provided
+		if productCode != "" {
+			query += ` AND p.code = $` + strconv.Itoa(argIndex)
+			args = append(args, productCode)
+			argIndex++
+		}
+
+		query += ` ORDER BY r.created_at DESC LIMIT $` + strconv.Itoa(argIndex) + ` OFFSET $` + strconv.Itoa(argIndex+1)
+		args = append(args, limit, offset)
+
+		rows, err := deps.DB.Pool.Query(ctx, query, args...)
+		if err != nil {
+			utils.WriteInternalServerError(w)
+			return
+		}
+		defer rows.Close()
+
+		var reviews []map[string]interface{}
+		for rows.Next() {
+			var reviewID, reviewInvoiceNumber, reviewComment string
+			var reviewRating int
+			var reviewCreatedAt time.Time
+			var transactionID string
+			var transactionUserID sql.NullString
+			var transactionContactPhone sql.NullString
+			var productName, skuName string
+			var userFirstName, userLastName sql.NullString
+
+			err := rows.Scan(
+				&reviewID, &reviewInvoiceNumber, &reviewRating, &reviewComment, &reviewCreatedAt,
+				&transactionID, &transactionUserID, &transactionContactPhone,
+				&productName, &skuName,
+				&userFirstName, &userLastName,
+			)
+			if err != nil {
+				continue
+			}
+
+			review := map[string]interface{}{
+				"rating":        reviewRating,
+				"comment":       reviewComment,
+				"invoiceNumber": maskInvoiceNumber(reviewInvoiceNumber),
+				"productName":   productName,
+				"skuName":       skuName,
+				"createdAt":     reviewCreatedAt.Format(time.RFC3339),
+			}
+
+			// Mask fullName (only if auth user)
+			if transactionUserID.Valid && userFirstName.Valid {
+				lastNameStr := ""
+				if userLastName.Valid {
+					lastNameStr = userLastName.String
+				}
+				fullName := maskFullName(userFirstName.String, lastNameStr)
+				if fullName != nil {
+					review["fullName"] = *fullName
+				} else {
+					review["fullName"] = nil
+				}
+			} else {
+				review["fullName"] = nil
+			}
+
+			// Mask phoneNumber
+			if transactionContactPhone.Valid {
+				review["phoneNumber"] = maskPhoneNumber(transactionContactPhone.String)
+			} else {
+				review["phoneNumber"] = ""
+			}
+
+			reviews = append(reviews, review)
+		}
+
+		if reviews == nil {
+			reviews = []map[string]interface{}{}
+		}
+
+		// Build response with overview
+		response := map[string]interface{}{
+			"overview": map[string]interface{}{
+				"rating": ratingCounts,
+				"total":  total,
+			},
+			"data": reviews,
+		}
+
+		utils.WriteSuccessJSON(w, response)
+	}
+}
+
+func handleCreateReviewImpl(deps *Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Rating        int    `json:"rating"`
+			Comment       string `json:"comment"`
+			InvoiceNumber string `json:"invoiceNumber"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			utils.WriteBadRequestError(w, "Invalid request body")
+			return
+		}
+
+		// Validate required fields
+		validationErrors := make(map[string]string)
+		if req.Rating < 1 || req.Rating > 5 {
+			validationErrors["rating"] = "Rating must be between 1 and 5"
+		}
+		if req.InvoiceNumber == "" {
+			validationErrors["invoiceNumber"] = "Invoice number is required"
+		}
+
+		if len(validationErrors) > 0 {
+			utils.WriteValidationErrorJSON(w, "Validation failed", validationErrors)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		// Check if transaction exists
+		var transactionID string
+		var transactionUserID sql.NullString
+		var transactionContactPhone sql.NullString
+		var productName, skuName string
+		var userFirstName, userLastName sql.NullString
+
+		err := deps.DB.Pool.QueryRow(ctx, `
+			SELECT 
+				t.id, t.user_id, t.contact_phone,
+				p.title as product_name, s.name as sku_name,
+				u.first_name, u.last_name
+			FROM transactions t
+			JOIN products p ON t.product_id = p.id
+			JOIN skus s ON t.sku_id = s.id
+			LEFT JOIN users u ON t.user_id = u.id
+			WHERE t.invoice_number = $1
+		`, req.InvoiceNumber).Scan(
+			&transactionID, &transactionUserID, &transactionContactPhone,
+			&productName, &skuName,
+			&userFirstName, &userLastName,
+		)
+
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				utils.WriteErrorJSON(w, http.StatusNotFound, "TRANSACTION_NOT_FOUND",
+					"Transaction not found", "Invoice number does not exist")
+				return
+			}
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		// Check if review already exists
+		var existingReviewID string
+		err = deps.DB.Pool.QueryRow(ctx, `
+			SELECT id FROM reviews WHERE invoice_number = $1
+		`, req.InvoiceNumber).Scan(&existingReviewID)
+
+		if err == nil {
+			utils.WriteErrorJSON(w, http.StatusConflict, "REVIEW_EXISTS",
+				"Review already exists", "This invoice number has already been reviewed")
+			return
+		} else if err != pgx.ErrNoRows {
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		// Get user_id from transaction
+		var userID interface{}
+		if transactionUserID.Valid {
+			userID = transactionUserID.String
+		} else {
+			userID = nil
+		}
+
+		// Create review
+		var reviewID string
+		var reviewCreatedAt time.Time
+		err = deps.DB.Pool.QueryRow(ctx, `
+			INSERT INTO reviews (invoice_number, transaction_id, user_id, rating, comment)
+			VALUES ($1, $2, $3, $4, $5)
+			RETURNING id, created_at
+		`, req.InvoiceNumber, transactionID, userID, req.Rating, req.Comment).Scan(&reviewID, &reviewCreatedAt)
+
+		if err != nil {
+			// Check for unique constraint violation
+			if strings.Contains(err.Error(), "unique constraint") || strings.Contains(err.Error(), "duplicate key") {
+				utils.WriteErrorJSON(w, http.StatusConflict, "REVIEW_EXISTS",
+					"Review already exists", "This invoice number has already been reviewed")
+				return
+			}
+			utils.WriteInternalServerError(w)
+			return
+		}
+
+		// Build response (same format as GET)
+		response := map[string]interface{}{
+			"rating":        req.Rating,
+			"comment":       req.Comment,
+			"invoiceNumber": maskInvoiceNumber(req.InvoiceNumber),
+			"productName":   productName,
+			"skuName":       skuName,
+			"createdAt":     reviewCreatedAt.Format(time.RFC3339),
+		}
+
+		// Mask fullName (only if auth user)
+		if transactionUserID.Valid && userFirstName.Valid {
+			lastNameStr := ""
+			if userLastName.Valid {
+				lastNameStr = userLastName.String
+			}
+			fullName := maskFullName(userFirstName.String, lastNameStr)
+			if fullName != nil {
+				response["fullName"] = *fullName
+			} else {
+				response["fullName"] = nil
+			}
+		} else {
+			response["fullName"] = nil
+		}
+
+		// Mask phoneNumber
+		if transactionContactPhone.Valid {
+			response["phoneNumber"] = maskPhoneNumber(transactionContactPhone.String)
+		} else {
+			response["phoneNumber"] = ""
 		}
 
 		utils.WriteSuccessJSON(w, response)
